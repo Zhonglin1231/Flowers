@@ -10,6 +10,7 @@ import SwiftUI
 struct MainDesignView: View {
     @StateObject private var viewModel = BouquetViewModel()
     
+    @State private var showingAIPreviewLab = false
     @State private var showingFlowerSelection = false
     @State private var showingWrappingStyle = false
     @State private var showingOrderForm = false
@@ -40,6 +41,14 @@ struct MainDesignView: View {
             .navigationTitle("花束设计")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showingAIPreviewLab = true
+                    } label: {
+                        Label("AI预览", systemImage: "sparkles")
+                    }
+                }
+                
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: {
@@ -62,6 +71,12 @@ struct MainDesignView: View {
                 FlowerSelectionView(
                     viewModel: viewModel,
                     isPresented: $showingFlowerSelection
+                )
+            }
+            .sheet(isPresented: $showingAIPreviewLab) {
+                AIBouquetPreviewView(
+                    bouquetViewModel: viewModel,
+                    isPresented: $showingAIPreviewLab
                 )
             }
             .sheet(isPresented: $showingWrappingStyle) {

@@ -31,8 +31,6 @@ class FlowerService: ObservableObject {
         isLoading = true
         
         listener = db.collection("flowers")
-            .whereField("isAvailable", isEqualTo: true)
-            .order(by: "category")
             .addSnapshotListener { [weak self] snapshot, error in
                 self?.isLoading = false
                 
@@ -48,7 +46,10 @@ class FlowerService: ObservableObject {
                 }
                 
                 self?.flowers = documents.compactMap { doc in
-                    try? doc.data(as: FlowerData.self)
+                    FlowerData(documentID: doc.documentID, data: doc.data())
+                }
+                .sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                 }
             }
     }
@@ -57,7 +58,6 @@ class FlowerService: ObservableObject {
     func fetchFlowersByCategory(_ category: String, completion: @escaping ([FlowerData]) -> Void) {
         db.collection("flowers")
             .whereField("category", isEqualTo: category)
-            .whereField("isAvailable", isEqualTo: true)
             .getDocuments { snapshot, error in
                 if let error = error {
                     print("Error fetching flowers by category: \(error)")
@@ -66,7 +66,7 @@ class FlowerService: ObservableObject {
                 }
                 
                 let flowers = snapshot?.documents.compactMap { doc in
-                    try? doc.data(as: FlowerData.self)
+                    FlowerData(documentID: doc.documentID, data: doc.data())
                 } ?? []
                 
                 completion(flowers)
@@ -76,45 +76,21 @@ class FlowerService: ObservableObject {
     // MARK: - 添加示例花卉数据（首次初始化用）
     func seedSampleFlowers() {
         let sampleFlowers: [[String: Any]] = [
-            // 玫瑰
-            ["name": "红玫瑰", "englishName": "Red Rose", "colorHex": "#FF0000", "price": 8.0, "emoji": "🌹", "category": "玫瑰", "description": "热情的红玫瑰，代表热烈的爱", "isAvailable": true, "stockQuantity": 100],
-            ["name": "粉玫瑰", "englishName": "Pink Rose", "colorHex": "#FFC0CB", "price": 8.0, "emoji": "🌹", "category": "玫瑰", "description": "温柔的粉玫瑰，代表初恋", "isAvailable": true, "stockQuantity": 100],
-            ["name": "白玫瑰", "englishName": "White Rose", "colorHex": "#FFFFFF", "price": 8.0, "emoji": "🤍", "category": "玫瑰", "description": "纯洁的白玫瑰，代表纯真", "isAvailable": true, "stockQuantity": 100],
-            ["name": "香槟玫瑰", "englishName": "Champagne Rose", "colorHex": "#F5E6D3", "price": 10.0, "emoji": "🌹", "category": "玫瑰", "description": "优雅的香槟玫瑰", "isAvailable": true, "stockQuantity": 80],
-            
-            // 郁金香
-            ["name": "红郁金香", "englishName": "Red Tulip", "colorHex": "#FF0000", "price": 6.0, "emoji": "🌷", "category": "郁金香", "description": "热情奔放的红郁金香", "isAvailable": true, "stockQuantity": 60],
-            ["name": "粉郁金香", "englishName": "Pink Tulip", "colorHex": "#FFC0CB", "price": 6.0, "emoji": "🌷", "category": "郁金香", "description": "可爱的粉郁金香", "isAvailable": true, "stockQuantity": 60],
-            ["name": "紫郁金香", "englishName": "Purple Tulip", "colorHex": "#800080", "price": 7.0, "emoji": "🌷", "category": "郁金香", "description": "神秘的紫郁金香", "isAvailable": true, "stockQuantity": 50],
-            
-            // 百合
-            ["name": "白百合", "englishName": "White Lily", "colorHex": "#FFFFFF", "price": 12.0, "emoji": "💐", "category": "百合", "description": "高雅的白百合，百年好合", "isAvailable": true, "stockQuantity": 40],
-            ["name": "粉百合", "englishName": "Pink Lily", "colorHex": "#FFC0CB", "price": 12.0, "emoji": "💐", "category": "百合", "description": "浪漫的粉百合", "isAvailable": true, "stockQuantity": 40],
-            
-            // 康乃馨
-            ["name": "红康乃馨", "englishName": "Red Carnation", "colorHex": "#FF0000", "price": 5.0, "emoji": "🌸", "category": "康乃馨", "description": "母爱的象征", "isAvailable": true, "stockQuantity": 100],
-            ["name": "粉康乃馨", "englishName": "Pink Carnation", "colorHex": "#FFC0CB", "price": 5.0, "emoji": "🌸", "category": "康乃馨", "description": "感恩与祝福", "isAvailable": true, "stockQuantity": 100],
-            
-            // 向日葵
-            ["name": "向日葵", "englishName": "Sunflower", "colorHex": "#FFD700", "price": 10.0, "emoji": "🌻", "category": "向日葵", "description": "阳光积极，充满希望", "isAvailable": true, "stockQuantity": 50],
-            
-            // 绣球花
-            ["name": "蓝绣球", "englishName": "Blue Hydrangea", "colorHex": "#0000FF", "price": 25.0, "emoji": "💠", "category": "绣球花", "description": "浪漫的蓝色绣球", "isAvailable": true, "stockQuantity": 30],
-            ["name": "粉绣球", "englishName": "Pink Hydrangea", "colorHex": "#FFC0CB", "price": 25.0, "emoji": "💠", "category": "绣球花", "description": "甜美的粉色绣球", "isAvailable": true, "stockQuantity": 30],
-            
-            // 满天星
-            ["name": "白满天星", "englishName": "White Gypsophila", "colorHex": "#FFFFFF", "price": 15.0, "emoji": "✨", "category": "满天星", "description": "浪漫的配花", "isAvailable": true, "stockQuantity": 80],
-            ["name": "粉满天星", "englishName": "Pink Gypsophila", "colorHex": "#FFB6C1", "price": 18.0, "emoji": "✨", "category": "满天星", "description": "梦幻的粉色满天星", "isAvailable": true, "stockQuantity": 60],
-            
-            // 配叶
-            ["name": "尤加利叶", "englishName": "Eucalyptus", "colorHex": "#228B22", "price": 8.0, "emoji": "🌿", "category": "配叶", "description": "清新的配叶", "isAvailable": true, "stockQuantity": 100],
-            ["name": "蕨类叶", "englishName": "Fern", "colorHex": "#228B22", "price": 5.0, "emoji": "🌿", "category": "配叶", "description": "自然的蕨类", "isAvailable": true, "stockQuantity": 100]
+            ["id": "dusty-rose", "name": "Dusty Rose", "category": "Rose", "color": "Blush Pink", "price": 4.5, "description": "Soft pink rose with muted tones for romantic arrangements.", "image": "https://images.unsplash.com/photo-1595483416504-65b0328153c1?auto=format&fit=crop&w=1200&q=80", "inventory_code": "R-001", "unit": "stem", "season": "Year-round"],
+            ["id": "pink-peony", "name": "Pink Peony", "category": "Peony", "color": "Coral", "price": 8.5, "description": "Lush seasonal bloom with layered petals and strong visual impact.", "image": "https://images.unsplash.com/photo-1588457776180-4206b4909301?auto=format&fit=crop&w=1200&q=80", "inventory_code": "P-017", "unit": "stem", "season": "Spring-Summer"],
+            ["id": "white-lily", "name": "White Lily", "category": "Lily", "color": "White", "price": 7.0, "description": "Elegant focal flower for calm and premium bouquet styles.", "image": "https://images.unsplash.com/photo-1562690868-60bbe7293e94?auto=format&fit=crop&w=1200&q=80", "inventory_code": "L-011", "unit": "stem", "season": "Summer"],
+            ["id": "hydrangea", "name": "Hydrangea", "category": "Hydrangea", "color": "Mixed", "price": 9.0, "description": "Large-volume bloom for statement bouquets and installations.", "image": "https://images.unsplash.com/photo-1597848212624-c84e6d3b6166?auto=format&fit=crop&w=1200&q=80", "inventory_code": "H-033", "unit": "stem", "season": "Summer"],
+            ["id": "sunflower", "name": "Sunflower", "category": "Sunflower", "color": "Yellow", "price": 6.5, "description": "Bright and uplifting flower for graduation and celebration bouquets.", "image": "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=1200&q=80", "inventory_code": "S-006", "unit": "stem", "season": "Summer-Autumn"],
+            ["id": "lavender", "name": "Lavender", "category": "Lavender", "color": "Lilac", "price": 7.5, "description": "Aromatic bundle used for texture, fragrance, and dried work.", "image": "https://images.unsplash.com/photo-1468327768560-75b778cbb551?auto=format&fit=crop&w=1200&q=80", "inventory_code": "L-022", "unit": "bunch", "season": "Summer-Autumn"],
+            ["id": "gypsophila", "name": "Gypsophila", "category": "Gypsophila", "color": "White", "price": 5.5, "description": "Cloud-like filler flower that softens the bouquet silhouette.", "image": "https://images.unsplash.com/photo-1525310072745-f49212b5ac6d?auto=format&fit=crop&w=1200&q=80", "inventory_code": "G-008", "unit": "bunch", "season": "Year-round"],
+            ["id": "eucalyptus", "name": "Eucalyptus", "category": "Greenery", "color": "Sage Green", "price": 4.0, "description": "Fresh greenery that adds structure and modern texture.", "image": "https://images.unsplash.com/photo-1502082553048-f009c37129b9?auto=format&fit=crop&w=1200&q=80", "inventory_code": "G-031", "unit": "bunch", "season": "Year-round"]
         ]
         
         let batch = db.batch()
         
         for flower in sampleFlowers {
-            let docRef = db.collection("flowers").document()
+            let docId = flower["id"] as? String ?? UUID().uuidString
+            let docRef = db.collection("flowers").document(docId)
             batch.setData(flower, forDocument: docRef)
         }
         

@@ -167,13 +167,34 @@ class BouquetViewModel: ObservableObject {
         )
     }
     
+    // MARK: - 应用 AI 推荐到当前花束
+    func applyAISelection(_ selections: [AIBouquetSelection], requirement: String) {
+        clearBouquet()
+        
+        let trimmedRequirement = requirement.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedRequirement.isEmpty {
+            currentBouquet.name = String(trimmedRequirement.prefix(18))
+            currentBouquet.note = "AI需求：\(trimmedRequirement)"
+        }
+        
+        for selection in selections where selection.isSelected {
+            for _ in 0..<selection.quantity {
+                addFlower(selection.flower)
+            }
+        }
+    }
+    
     // MARK: - 保存花束到 Firebase
     func saveBouquet(completion: ((Bool) -> Void)? = nil) {
         bouquetService.saveBouquet(currentBouquet) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
-                    self?.savedBouquets.append(self!.currentBouquet)
+                    guard let self else {
+                        completion?(true)
+                        return
+                    }
+                    self.savedBouquets.append(self.currentBouquet)
                     completion?(true)
                 case .failure(let error):
                     self?.errorMessage = error.localizedDescription
@@ -203,9 +224,12 @@ class BouquetViewModel: ObservableObject {
             DispatchQueue.main.async {
                 switch result {
                 case .success:
+                    guard let self else {
+                        return
+                    }
                     // 创建本地订单对象用于显示
                     let order = FlowerOrder(
-                        bouquet: self!.currentBouquet,
+                        bouquet: self.currentBouquet,
                         customerName: customerName,
                         customerPhone: customerPhone,
                         deliveryAddress: deliveryAddress,
@@ -214,7 +238,7 @@ class BouquetViewModel: ObservableObject {
                         status: .pending,
                         createdAt: Date()
                     )
-                    self?.orders.append(order)
+                    self.orders.append(order)
                     completion(.success(order))
                 case .failure(let error):
                     self?.errorMessage = error.localizedDescription

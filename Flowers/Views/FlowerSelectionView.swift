@@ -68,7 +68,7 @@ struct CategoryFilterView: View {
                 // 各分类按钮
                 ForEach(FlowerCategory.allCases, id: \.self) { category in
                     CategoryChip(
-                        title: category.rawValue,
+                        title: category.displayName,
                         icon: category.icon,
                         isSelected: selectedCategory == category
                     ) {
@@ -124,8 +124,29 @@ struct FlowerCard: View {
                     .fill(flower.color.opacity(0.2))
                     .frame(width: 80, height: 80)
                 
-                Text(flower.emoji)
-                    .font(.system(size: 40))
+                if let imageURL = flower.imageURL {
+                    AsyncImage(url: imageURL) { phase in
+                        switch phase {
+                        case .empty:
+                            ProgressView()
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            Text(flower.emoji)
+                                .font(.system(size: 40))
+                        @unknown default:
+                            Text(flower.emoji)
+                                .font(.system(size: 40))
+                        }
+                    }
+                    .frame(width: 72, height: 72)
+                    .clipShape(Circle())
+                } else {
+                    Text(flower.emoji)
+                        .font(.system(size: 40))
+                }
             }
             
             // 花卉名称
@@ -137,9 +158,10 @@ struct FlowerCard: View {
             Text(flower.englishName)
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .lineLimit(1)
             
             // 价格
-            Text("¥\(String(format: "%.0f", flower.price))/支")
+            Text("¥\(String(format: "%.1f", flower.price))/\(flower.unitDisplayName)")
                 .font(.subheadline)
                 .fontWeight(.semibold)
                 .foregroundColor(.pink)
