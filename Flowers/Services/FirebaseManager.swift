@@ -130,6 +130,7 @@ struct FlowerData: Identifiable {
             categoryName: category,
             description: description,
             imageURL: URL(string: image ?? ""),
+            stockQuantity: stockQuantity,
             inventoryCode: resolvedInventoryCode,
             unit: resolvedUnit,
             season: resolvedSeason,
@@ -162,6 +163,12 @@ struct BouquetData: Codable, Identifiable {
     let createdAt: Date
     let userId: String?
     var totalPrice: Double
+    var imageURL: String? = nil
+    var tagline: String? = nil
+    var descriptionLines: [String]? = nil
+    var longDescription: [String]? = nil
+    var isPublished: Bool? = nil
+    var isTemplate: Bool? = nil
 }
 
 /// 订单数据模型

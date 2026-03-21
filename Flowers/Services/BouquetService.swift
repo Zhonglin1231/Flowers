@@ -16,6 +16,8 @@ class BouquetService: ObservableObject {
     private var listener: ListenerRegistration?
     
     @Published var savedBouquets: [BouquetData] = []
+    @Published var catalogBouquets: [BouquetData] = []
+    @Published var hasResolvedCatalogBouquets = false
     @Published var isLoading = false
     @Published var error: String?
     
@@ -68,6 +70,7 @@ class BouquetService: ObservableObject {
         }
         
         isLoading = true
+        listener?.remove()
         
         listener = db.collection("bouquets")
             .whereField("userId", isEqualTo: userId)
@@ -89,6 +92,7 @@ class BouquetService: ObservableObject {
     // MARK: - 获取所有保存的花束
     private func fetchAllBouquets() {
         isLoading = true
+        listener?.remove()
         
         listener = db.collection("bouquets")
             .order(by: "createdAt", descending: true)
@@ -107,12 +111,44 @@ class BouquetService: ObservableObject {
             }
     }
     
+    // MARK: - 获取店铺展示花束
+    func fetchCatalogBouquets() {
+        isLoading = true
+        hasResolvedCatalogBouquets = false
+        listener?.remove()
+        
+        listener = db.collection("bouquets")
+            .order(by: "createdAt", descending: true)
+            .limit(to: 50)
+            .addSnapshotListener { [weak self] snapshot, error in
+                self?.isLoading = false
+                self?.hasResolvedCatalogBouquets = true
+                
+                if let error = error {
+                    self?.error = error.localizedDescription
+                    self?.catalogBouquets = []
+                    return
+                }
+                
+                let bouquets = snapshot?.documents.compactMap { doc in
+                    self?.parseBouquetDocument(doc)
+                } ?? []
+                
+                let publishedBouquets = bouquets.filter { bouquet in
+                    bouquet.isPublished != false && bouquet.isTemplate != true
+                }
+                
+                self?.catalogBouquets = publishedBouquets.isEmpty ? bouquets : publishedBouquets
+            }
+    }
+    
     // MARK: - 解析花束文档
     private func parseBouquetDocument(_ doc: QueryDocumentSnapshot) -> BouquetData? {
         let data = doc.data()
         
-        guard let name = data["name"] as? String,
-              let createdTimestamp = data["createdAt"] as? Timestamp else {
+        let resolvedName = ((data["name"] as? String) ?? (data["title"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !resolvedName.isEmpty else {
             return nil
         }
         
@@ -131,16 +167,30 @@ class BouquetService: ObservableObject {
             )
         }
         
+        let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+        let derivedTotalPrice = items.reduce(0) { partial, item in
+            partial + (item.flowerPrice * Double(item.quantity))
+        }
+        let totalPrice = (data["totalPrice"] as? NSNumber)?.doubleValue
+            ?? (data["price"] as? NSNumber)?.doubleValue
+            ?? derivedTotalPrice
+        
         return BouquetData(
             id: doc.documentID,
-            name: name,
+            name: resolvedName,
             items: items,
             wrappingStyle: data["wrappingStyle"] as? String ?? "牛皮纸",
             ribbonColorHex: data["ribbonColorHex"] as? String ?? "#FFC0CB",
-            note: data["note"] as? String ?? "",
-            createdAt: createdTimestamp.dateValue(),
+            note: (data["note"] as? String) ?? (data["description"] as? String) ?? "",
+            createdAt: createdAt,
             userId: data["userId"] as? String,
-            totalPrice: data["totalPrice"] as? Double ?? 0
+            totalPrice: totalPrice,
+            imageURL: (data["imageURL"] as? String) ?? (data["image"] as? String),
+            tagline: (data["tagline"] as? String) ?? (data["subtitle"] as? String),
+            descriptionLines: data["descriptionLines"] as? [String],
+            longDescription: data["longDescription"] as? [String],
+            isPublished: data["isPublished"] as? Bool,
+            isTemplate: data["isTemplate"] as? Bool
         )
     }
     

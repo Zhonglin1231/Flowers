@@ -15,6 +15,7 @@ class FlowerService: ObservableObject {
     private var listener: ListenerRegistration?
     
     @Published var flowers: [FlowerData] = []
+    @Published var hasResolvedFlowers = false
     @Published var isLoading = false
     @Published var error: String?
     
@@ -29,13 +30,16 @@ class FlowerService: ObservableObject {
     // MARK: - 获取所有花卉（实时监听）
     func fetchFlowers() {
         isLoading = true
+        hasResolvedFlowers = false
         
         listener = db.collection("flowers")
             .addSnapshotListener { [weak self] snapshot, error in
                 self?.isLoading = false
+                self?.hasResolvedFlowers = true
                 
                 if let error = error {
                     self?.error = error.localizedDescription
+                    self?.flowers = []
                     print("Error fetching flowers: \(error)")
                     return
                 }

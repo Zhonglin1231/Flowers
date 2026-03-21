@@ -57,7 +57,7 @@ final class AIBouquetPreviewViewModel: ObservableObject {
         selections[index].quantity = max(1, quantity)
     }
     
-    func generatePreview() async {
+    func generatePreview(requireReferenceImages: Bool = false) async {
         errorMessage = nil
         isGenerating = true
         
@@ -65,8 +65,10 @@ final class AIBouquetPreviewViewModel: ObservableObject {
             generatedPreview = try await service.generatePreview(
                 requirement: requirement,
                 selections: selections,
+                wrappingOption: nil,
                 apiKey: apiKey,
-                modelName: modelName
+                modelName: modelName,
+                requireReferenceImages: requireReferenceImages
             )
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

@@ -68,7 +68,7 @@ struct AIBouquetPreviewView: View {
                 .font(.title3)
                 .fontWeight(.bold)
             
-            Text("其中 \(flowersWithImagesCount) 款带参考图，可直接参与图生图生成；其余花材会继续参与智能检索，但生成时会退回文生图。")
+            Text("其中 \(flowersWithImagesCount) 款带参考图；当前预览生成只会使用带真实参考图的花材，不再退回纯文生图。")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
             

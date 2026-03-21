@@ -84,12 +84,18 @@ final class FigmaCustomerAppModel: ObservableObject {
         case farm
     }
 
+    enum AssistantFlowStage: Equatable {
+        case chat
+        case diy(DIYStep)
+        case preview
+    }
+
     @Published var authState: AuthState = .welcome
     @Published var activeTab: MainTab = .home
     @Published var overlayScreen: OverlayScreen?
     @Published var email = ""
     @Published var password = ""
-    @Published var selectedProduct = BouquetProduct.catalog[1]
+    @Published var selectedProduct = BouquetProduct.defaultSelection
     @Published var cartItems: [CartItem] = []
     @Published var browseMode: BrowseMode = .materials
     @Published var selectedFlowerCategory: FlowerCategory?
@@ -98,6 +104,43 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var selectedOccasion = "生日"
     @Published var selectedColor = "粉色"
     @Published var selectedBudget = "港幣100-200元"
+    @Published var availableFlowers: [Flower] = Flower.sampleFlowers
+    @Published var availableBouquetProducts: [BouquetProduct] = []
+    @Published var availableWrappingOptions: [BouquetWrappingOption] = []
+    @Published var assistantFlowStage: AssistantFlowStage = .chat
+    @Published var selectedDIYFlowerCategory: FlowerCategory = .tulip
+    @Published var selectedFlowerQuantities: [String: Int] = [:]
+    @Published var selectedWrappingOptionID: String?
+    @Published var includeGreetingCard = true
+    @Published var cardMessage = ""
+    @Published var selectedBlessingTemplateID: String?
+    @Published var generatedPreview: AIGeneratedPreview?
+    @Published var previewErrorMessage: String?
+    @Published var isGeneratingPreview = false
+    @Published var showPreviewDisclaimer = false
+    @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
+    @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-5-0-250428"
+
+    private let flowerService = FlowerService()
+    private let bouquetService = BouquetService()
+    private let previewService = AIBouquetPreviewService()
+    private let storefrontConfigService = StorefrontConfigService()
+    private var cancellables = Set<AnyCancellable>()
+    private var liveBouquetCatalog: [BouquetData] = []
+    private var hasResolvedRemoteFlowers = false
+    private var hasResolvedRemoteBouquets = false
+    private var hasResolvedRemoteWrappingOptions = false
+    private var remoteFlowerCount = 0
+
+    init() {
+        setupFlowerBindings()
+        setupBouquetBindings()
+        setupPreviewConfigurationBindings()
+        setupWrappingBindings()
+        loadLocalFlowersIfNeeded()
+        bouquetService.fetchCatalogBouquets()
+        storefrontConfigService.startListening()
+    }
 
     var canLogin: Bool {
         !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -107,11 +150,217 @@ final class FigmaCustomerAppModel: ObservableObject {
     var recommendedBouquet: BouquetProduct {
         selectedProduct
     }
+    
+    var featuredBouquetProduct: BouquetProduct? {
+        availableBouquetProducts.first
+    }
+    
+    var promotionalBouquetProduct: BouquetProduct? {
+        availableBouquetProducts.dropFirst().first ?? featuredBouquetProduct
+    }
 
     var filteredFlowers: [Flower] {
-        let flowers = Flower.sampleFlowers
+        let flowers = availableFlowers
         guard let selectedFlowerCategory else { return flowers }
         return flowers.filter { $0.category == selectedFlowerCategory }
+    }
+
+    var diyFlowerCategories: [FlowerCategory] {
+        FlowerCategory.allCases.filter { category in
+            availableFlowers.contains(where: { $0.category == category })
+        }
+    }
+
+    var diyFlowers: [Flower] {
+        availableFlowers
+            .filter { $0.category == selectedDIYFlowerCategory }
+            .sorted { lhs, rhs in
+                if lhs.price == rhs.price {
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                return lhs.price < rhs.price
+            }
+    }
+
+    var selectedDIYFlowers: [SelectedFlowerLine] {
+        availableFlowers.compactMap { flower in
+            let quantity = selectedFlowerQuantities[flower.id, default: 0]
+            guard quantity > 0 else { return nil }
+            return SelectedFlowerLine(flower: flower, quantity: quantity)
+        }
+    }
+
+    var selectedWrappingOption: BouquetWrappingOption? {
+        availableWrappingOptions.first(where: { $0.id == selectedWrappingOptionID })
+    }
+
+    var selectedFlowerStemCount: Int {
+        selectedFlowerQuantities.values.reduce(0, +)
+    }
+
+    var selectedFlowerSubtotal: Double {
+        selectedDIYFlowers.reduce(0) { partial, line in
+            partial + line.subtotal
+        }
+    }
+
+    var greetingCardFee: Double {
+        includeGreetingCard ? 28 : 0
+    }
+
+    var wrappingFee: Double {
+        selectedWrappingOption?.price ?? 0
+    }
+
+    var arrangementFee: Double {
+        selectedDIYFlowers.isEmpty ? 0 : 50
+    }
+
+    var diyTotalPrice: Double {
+        selectedFlowerSubtotal + greetingCardFee + wrappingFee + arrangementFee
+    }
+
+    var recommendedFlowerTypes: [String] {
+        let recipient = selectedRecipient
+        let occasion = selectedOccasion
+        let color = selectedColor
+
+        if occasion.contains("畢業") {
+            if color.contains("黃") {
+                return ["向日葵", "白滿天星", "尤加利葉"]
+            }
+            if color.contains("粉") {
+                return ["向日葵", "粉郁金香", "粉滿天星"]
+            }
+            return ["向日葵", "白滿天星", "尤加利葉"]
+        }
+
+        if occasion.contains("紀念") || recipient.contains("伴侶") {
+            if color.contains("紅") {
+                return ["紅玫瑰", "紅郁金香", "白滿天星"]
+            }
+            if color.contains("白") || color.contains("綠") {
+                return ["白玫瑰", "白百合", "尤加利葉"]
+            }
+            return ["粉玫瑰", "粉郁金香", "粉滿天星"]
+        }
+
+        if recipient.contains("家人") || occasion.contains("感謝") {
+            if color.contains("白") || color.contains("綠") {
+                return ["白百合", "白滿天星", "尤加利葉"]
+            }
+            return ["粉康乃馨", "粉百合", "尤加利葉"]
+        }
+
+        if color.contains("藍") {
+            return ["藍繡球", "白滿天星", "尤加利葉"]
+        }
+        if color.contains("紅") {
+            return ["紅玫瑰", "白百合", "尤加利葉"]
+        }
+        if color.contains("白") || color.contains("綠") {
+            return ["白玫瑰", "白百合", "尤加利葉"]
+        }
+        if color.contains("黃") {
+            return ["向日葵", "香檳玫瑰", "尤加利葉"]
+        }
+
+        return ["粉玫瑰", "粉百合", "粉滿天星"]
+    }
+
+    var suggestedDesignText: String {
+        switch selectedPurchaseType {
+        case "單枝花":
+            return "以 \(selectedColor) 為主調的單枝花禮，適合送給 \(selectedRecipient) 作為 \(selectedOccasion) 心意。"
+        case "自訂":
+            return "為 \(selectedRecipient) 客製一款 \(selectedColor) 主調的 \(selectedOccasion) 花禮，層次感會更突出。"
+        default:
+            return "推薦一束送給 \(selectedRecipient) 的 \(selectedColor) \(selectedOccasion) 花束，整體包裝走精緻柔和路線。"
+        }
+    }
+
+    var estimatedPriceText: String {
+        switch (selectedPurchaseType, selectedBudget) {
+        case ("單枝花", "小於港幣100元"):
+            return "約 HKD 68-98"
+        case ("單枝花", "港幣100-200元"):
+            return "約 HKD 128-168"
+        case ("單枝花", "港幣200-300元"):
+            return "約 HKD 188-228"
+        case ("單枝花", _):
+            return "約 HKD 320+"
+        case ("自訂", "小於港幣100元"):
+            return "約 HKD 108"
+        case ("自訂", "港幣100-200元"):
+            return "約 HKD 188-218"
+        case ("自訂", "港幣200-300元"):
+            return "約 HKD 268-298"
+        case ("自訂", _):
+            return "約 HKD 398+"
+        case (_, "小於港幣100元"):
+            return "約 HKD 98"
+        case (_, "港幣100-200元"):
+            return "約 HKD 168-198"
+        case (_, "港幣200-300元"):
+            return "約 HKD 238-288"
+        default:
+            return "約 HKD 368+"
+        }
+    }
+
+    var customBouquetHeadline: String {
+        if selectedOccasion.contains("畢業") {
+            return "畢業祝賀花束"
+        }
+        if selectedOccasion.contains("生日") {
+            return "生日心意花束"
+        }
+        if selectedOccasion.contains("紀念") {
+            return "紀念日浪漫花束"
+        }
+        return "\(selectedColor)\(selectedOccasion)花束"
+    }
+
+    var canAdvanceFromFlowerStep: Bool {
+        !selectedDIYFlowers.isEmpty
+    }
+
+    var canAdvanceFromWrappingStep: Bool {
+        selectedWrappingOption != nil
+    }
+
+    var missingReferenceFlowerNames: [String] {
+        selectedDIYFlowers
+            .filter { !$0.flower.hasReferenceImage }
+            .map { $0.flower.name }
+    }
+    
+    var missingPreviewReferenceMessages: [String] {
+        var messages: [String] = []
+        
+        if !hasResolvedRemoteFlowers {
+            messages.append("花材参考图仍在从 Firestore 加载。")
+        } else if remoteFlowerCount == 0 {
+            messages.append("Firestore 的 flowers 暂无可用花材参考图。")
+        } else if selectedDIYFlowers.isEmpty {
+            messages.append("请先选择花材。")
+        } else if !missingReferenceFlowerNames.isEmpty {
+            messages.append("以下花材缺少 Firestore 参考图：\(missingReferenceFlowerNames.joined(separator: "、"))")
+        }
+        
+        if !hasResolvedRemoteWrappingOptions {
+            messages.append("包装参考图仍在从 Firestore 加载。")
+        } else if selectedWrappingOption == nil {
+            messages.append("请先选择包装。")
+        } else if selectedWrappingOption?.hasReferenceImage != true {
+            messages.append("所选包装缺少 Firestore 参考图。")
+        }
+        
+        return messages
+    }
+    
+    var canGenerateDIYPreview: Bool {
+        missingPreviewReferenceMessages.isEmpty
     }
 
     func showEmailLogin() {
@@ -152,6 +401,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     func openCustomBouquetFlow(from tab: MainTab = .assistant) {
         activeTab = tab
         resetAssistantSelections()
+        resetDIYFlow()
         overlayScreen = .assistantJourney
     }
 
@@ -206,7 +456,8 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func browseFeaturedProduct() {
-        openProduct(BouquetProduct.catalog[0], from: .home)
+        guard let featuredBouquetProduct else { return }
+        openProduct(featuredBouquetProduct, from: .home)
     }
 
     func addFlowerToCart(_ flower: Flower) {
@@ -224,6 +475,272 @@ final class FigmaCustomerAppModel: ObservableObject {
         selectedColor = "粉色"
         selectedBudget = "港幣100-200元"
     }
+
+    func quantity(for flower: Flower) -> Int {
+        selectedFlowerQuantities[flower.id, default: 0]
+    }
+
+    func increaseFlowerQuantity(_ flower: Flower) {
+        selectedFlowerQuantities[flower.id, default: 0] += 1
+    }
+
+    func decreaseFlowerQuantity(_ flower: Flower) {
+        let currentQuantity = selectedFlowerQuantities[flower.id, default: 0]
+        guard currentQuantity > 0 else { return }
+        if currentQuantity == 1 {
+            selectedFlowerQuantities.removeValue(forKey: flower.id)
+        } else {
+            selectedFlowerQuantities[flower.id] = currentQuantity - 1
+        }
+    }
+
+    func toggleWrappingSelection(_ option: BouquetWrappingOption) {
+        if selectedWrappingOptionID == option.id {
+            selectedWrappingOptionID = nil
+        } else {
+            selectedWrappingOptionID = option.id
+        }
+    }
+
+    func toggleGreetingCard(_ include: Bool) {
+        includeGreetingCard = include
+        if !include {
+            cardMessage = ""
+            selectedBlessingTemplateID = nil
+        }
+    }
+
+    func applyBlessingTemplate(_ template: CardBlessingTemplate) {
+        includeGreetingCard = true
+        selectedBlessingTemplateID = template.id
+        cardMessage = template.message
+    }
+
+    func proceedToDIYDesigner() {
+        if let recommendedCategory = preferredDIYCategory {
+            selectedDIYFlowerCategory = recommendedCategory
+        }
+        assistantFlowStage = .diy(.flowers)
+    }
+
+    func navigateToDIYStep(_ step: DIYStep) {
+        assistantFlowStage = .diy(step)
+    }
+    
+    func stepBackInDIYFlow(from step: DIYStep) {
+        if let previous = step.previous {
+            assistantFlowStage = .diy(previous)
+        } else {
+            assistantFlowStage = .chat
+        }
+    }
+
+    func presentPreviewDisclaimerOverlay() {
+        showPreviewDisclaimer = true
+    }
+
+    func dismissPreviewDisclaimerOverlay() {
+        showPreviewDisclaimer = false
+    }
+
+    func returnToConfirmStep() {
+        assistantFlowStage = .diy(.confirm)
+        showPreviewDisclaimer = false
+    }
+
+    func generateDIYPreview() async {
+        previewErrorMessage = nil
+        isGeneratingPreview = true
+
+        defer {
+            isGeneratingPreview = false
+        }
+        
+        guard canGenerateDIYPreview else {
+            previewErrorMessage = missingPreviewReferenceMessages.first ?? "请先补齐 Firestore 里的花材和包装参考图。"
+            return
+        }
+
+        let selections = selectedDIYFlowers.map { line in
+            AIBouquetSelection(
+                flower: line.flower,
+                quantity: line.quantity,
+                score: 100,
+                reasons: ["用户在 DIY 流程中实际选择"],
+                isSelected: true
+            )
+        }
+
+        do {
+            generatedPreview = try await previewService.generatePreview(
+                requirement: selectedWrappingOption?.name ?? "",
+                selections: selections,
+                wrappingOption: selectedWrappingOption,
+                apiKey: apiKey,
+                modelName: modelName,
+                requireReferenceImages: true
+            )
+            assistantFlowStage = .preview
+            showPreviewDisclaimer = true
+        } catch {
+            previewErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func addCustomBouquetToCart() {
+        let product = BouquetProduct(
+            id: "custom-\(selectedDIYFlowers.map(\.flower.id).joined(separator: "-"))-\(selectedWrappingOptionID ?? "plain")",
+            name: customBouquetHeadline,
+            tagline: selectedWrappingOption?.name ?? "DIY 客製花束",
+            descriptionLines: selectedDIYFlowers.map { "\($0.flower.name) x\($0.quantity)" },
+            longDescription: [
+                suggestedDesignText,
+                "花材：\(selectedDIYFlowers.map { "\($0.flower.name) x\($0.quantity)" }.joined(separator: "、"))",
+                "包裝：\(selectedWrappingOption?.name ?? "未選擇")"
+            ],
+            priceText: "HKD \(Int(diyTotalPrice.rounded()))",
+            imageURL: generatedPreview?.imageURL.absoluteString
+                ?? selectedWrappingOption?.imageURL
+                ?? selectedDIYFlowers.first?.flower.imageURL?.absoluteString
+                ?? "",
+            accent: FigmaPalette.softPink
+        )
+        addProductToCart(product)
+    }
+
+    func addCustomBouquetToCartAndOpenCart() {
+        addCustomBouquetToCart()
+        activeTab = .cart
+        overlayScreen = nil
+    }
+
+    private func setupFlowerBindings() {
+        flowerService.$flowers
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] flowerDataList in
+                guard let self else { return }
+                self.remoteFlowerCount = flowerDataList.count
+                if !flowerDataList.isEmpty {
+                    self.availableFlowers = flowerDataList.map { $0.toFlower() }
+                    if !self.diyFlowerCategories.contains(self.selectedDIYFlowerCategory),
+                       let firstCategory = self.diyFlowerCategories.first {
+                        self.selectedDIYFlowerCategory = firstCategory
+                    }
+                }
+                self.refreshBouquetCatalog()
+            }
+            .store(in: &cancellables)
+        
+        flowerService.$hasResolvedFlowers
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasResolved in
+                self?.hasResolvedRemoteFlowers = hasResolved
+            }
+            .store(in: &cancellables)
+    }
+
+    private func setupBouquetBindings() {
+        bouquetService.$catalogBouquets
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] bouquets in
+                self?.liveBouquetCatalog = bouquets
+                self?.refreshBouquetCatalog()
+            }
+            .store(in: &cancellables)
+        
+        bouquetService.$hasResolvedCatalogBouquets
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasResolved in
+                self?.hasResolvedRemoteBouquets = hasResolved
+                self?.refreshBouquetCatalog()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func setupPreviewConfigurationBindings() {
+        storefrontConfigService.$previewConfiguration
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] config in
+                guard let self, let config, config.isEnabled else { return }
+                
+                if let apiKey = config.apiKey {
+                    self.apiKey = apiKey
+                }
+                
+                if let modelName = config.modelName {
+                    self.modelName = modelName
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func setupWrappingBindings() {
+        storefrontConfigService.$wrappingOptions
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] options in
+                guard let self else { return }
+                let mappedOptions = options.map(BouquetWrappingOption.init)
+                self.availableWrappingOptions = mappedOptions
+                
+                if let selectedWrappingOptionID,
+                   !mappedOptions.contains(where: { $0.id == selectedWrappingOptionID }) {
+                    self.selectedWrappingOptionID = nil
+                }
+            }
+            .store(in: &cancellables)
+        
+        storefrontConfigService.$hasResolvedWrappingOptions
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasResolved in
+                self?.hasResolvedRemoteWrappingOptions = hasResolved
+            }
+            .store(in: &cancellables)
+    }
+
+    private func loadLocalFlowersIfNeeded() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.availableFlowers.isEmpty else { return }
+            self.availableFlowers = Flower.sampleFlowers
+            self.refreshBouquetCatalog()
+        }
+    }
+
+    private func resetDIYFlow() {
+        assistantFlowStage = .chat
+        selectedDIYFlowerCategory = preferredDIYCategory ?? diyFlowerCategories.first ?? .rose
+        selectedFlowerQuantities = [:]
+        selectedWrappingOptionID = nil
+        includeGreetingCard = true
+        cardMessage = ""
+        selectedBlessingTemplateID = nil
+        generatedPreview = nil
+        previewErrorMessage = nil
+        isGeneratingPreview = false
+        showPreviewDisclaimer = false
+    }
+
+    private var preferredDIYCategory: FlowerCategory? {
+        for flowerName in recommendedFlowerTypes {
+            if let flower = availableFlowers.first(where: { $0.name == flowerName }) {
+                return flower.category
+            }
+        }
+        return diyFlowerCategories.first
+    }
+    
+    private func refreshBouquetCatalog() {
+        let remoteProducts = liveBouquetCatalog.map { bouquet in
+            BouquetProduct.fromBouquet(bouquet, availableFlowers: availableFlowers)
+        }
+        let resolvedCatalog = hasResolvedRemoteBouquets ? remoteProducts : []
+
+        availableBouquetProducts = resolvedCatalog
+
+        if let firstProduct = resolvedCatalog.first,
+           !resolvedCatalog.contains(where: { $0.id == selectedProduct.id }) {
+            selectedProduct = resolvedCatalog.dropFirst().first ?? firstProduct
+        }
+    }
 }
 
 struct BouquetProduct: Identifiable, Hashable {
@@ -235,6 +752,14 @@ struct BouquetProduct: Identifiable, Hashable {
     let priceText: String
     let imageURL: String
     let accent: Color
+    
+    static var defaultFeatured: BouquetProduct {
+        catalog.first ?? defaultSelection
+    }
+    
+    static var defaultSelection: BouquetProduct {
+        catalog.count > 1 ? catalog[1] : catalog[0]
+    }
 
     static let catalog: [BouquetProduct] = [
         BouquetProduct(
@@ -329,6 +854,93 @@ struct BouquetProduct: Identifiable, Hashable {
             imageURL: flower.imageURL?.absoluteString ?? "",
             accent: FigmaPalette.softPink
         )
+    }
+    
+    static func fromBouquet(_ bouquet: BouquetData, availableFlowers: [Flower]) -> BouquetProduct {
+        let storedDescription = sanitizedLines(bouquet.descriptionLines)
+        let derivedFlowerLines = bouquet.items
+            .filter { !$0.flowerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { "\($0.flowerName) x\($0.quantity)" }
+        let descriptionLines = storedDescription.isEmpty
+            ? Array((derivedFlowerLines + wrapSummaryLine(from: bouquet)).prefix(3))
+            : storedDescription
+        
+        let storedLongDescription = sanitizedLines(bouquet.longDescription)
+        let longDescription = storedLongDescription.isEmpty
+            ? fallbackLongDescription(for: bouquet, descriptionLines: descriptionLines)
+            : storedLongDescription
+        
+        let trimmedTagline = sanitizedText(bouquet.tagline)
+        let resolvedTagline = trimmedTagline
+            ?? descriptionLines.first
+            ?? "来自数据库的真实花束"
+        
+        let resolvedImageURL = sanitizedText(bouquet.imageURL)
+            ?? imageURL(for: bouquet, availableFlowers: availableFlowers)
+            ?? ""
+        
+        let resolvedPrice = bouquet.totalPrice > 0
+            ? bouquet.totalPrice
+            : bouquet.items.reduce(0) { partial, item in
+                partial + (item.flowerPrice * Double(item.quantity))
+            }
+        
+        return BouquetProduct(
+            id: bouquet.id ?? "bouquet-\(bouquet.name)",
+            name: bouquet.name,
+            tagline: resolvedTagline,
+            descriptionLines: descriptionLines.isEmpty ? ["店铺真实花束"] : descriptionLines,
+            longDescription: longDescription,
+            priceText: "HKD \(Int(resolvedPrice.rounded()))",
+            imageURL: resolvedImageURL,
+            accent: FigmaPalette.softPink
+        )
+    }
+    
+    private static func sanitizedText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    
+    private static func sanitizedLines(_ values: [String]?) -> [String] {
+        (values ?? []).compactMap { sanitizedText($0) }
+    }
+    
+    private static func wrapSummaryLine(from bouquet: BouquetData) -> [String] {
+        guard let wrapping = sanitizedText(bouquet.wrappingStyle) else {
+            return []
+        }
+        return ["包装：\(wrapping)"]
+    }
+    
+    private static func imageURL(for bouquet: BouquetData, availableFlowers: [Flower]) -> String? {
+        for item in bouquet.items {
+            if let matchedFlower = availableFlowers.first(where: { $0.id == item.flowerId }),
+               let imageURL = sanitizedText(matchedFlower.imageURL?.absoluteString) {
+                return imageURL
+            }
+            
+            if let matchedFlower = availableFlowers.first(where: { $0.name == item.flowerName }),
+               let imageURL = sanitizedText(matchedFlower.imageURL?.absoluteString) {
+                return imageURL
+            }
+        }
+        return nil
+    }
+    
+    private static func fallbackLongDescription(for bouquet: BouquetData, descriptionLines: [String]) -> [String] {
+        var lines = descriptionLines
+        
+        if let note = sanitizedText(bouquet.note) {
+            lines.append(note)
+        }
+        
+        if lines.isEmpty {
+            lines.append("花店根据数据库真实花材组合而成。")
+        }
+        
+        return Array(lines.prefix(3))
     }
 }
 
@@ -579,65 +1191,69 @@ private struct HomeScreen: View {
                                 appModel.selectTab(.profile)
                             }
 
-                            PromoCard(
-                                title: "母親節花束 9 折",
-                                subtitle: "全場母親節精選花束 10% OFF",
-                                imageURL: "https://www.figma.com/api/mcp/asset/10991474-1a42-49a2-a00a-5aec52f92f73",
-                                width: 311
-                            ) {
-                                appModel.openProduct(BouquetProduct.catalog[1], from: .home)
+                            if let promotionalProduct = appModel.promotionalBouquetProduct {
+                                PromoCard(
+                                    title: promotionalProduct.name,
+                                    subtitle: ([promotionalProduct.tagline] + Array(promotionalProduct.descriptionLines.prefix(1))).joined(separator: " · "),
+                                    imageURL: promotionalProduct.imageURL,
+                                    width: 311
+                                ) {
+                                    appModel.openProduct(promotionalProduct, from: .home)
+                                }
                             }
                         }
                     }
 
-                    Button {
-                        appModel.browseFeaturedProduct()
-                    } label: {
-                        ZStack(alignment: .topLeading) {
-                            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                                .fill(FigmaPalette.softPink)
+                    if let featuredProduct = appModel.featuredBouquetProduct {
+                        Button {
+                            appModel.browseFeaturedProduct()
+                        } label: {
+                            ZStack(alignment: .topLeading) {
+                                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                                    .fill(FigmaPalette.softPink)
 
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text("本月精選花束")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .padding(.top, 24)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text("本月精選花束")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .padding(.top, 24)
+                                        .padding(.leading, 23)
+
+                                    HStack {
+                                        Spacer()
+
+                                        RemoteAssetImage(
+                                            urlString: featuredProduct.imageURL,
+                                            fallbackSystemName: "gift.fill",
+                                            contentMode: .fit
+                                        )
+                                        .frame(width: 124, height: 143)
+                                        .padding(.top, 8)
+
+                                        Spacer()
+
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 24, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .padding(.trailing, 18)
+                                    }
+
+                                    Spacer()
+
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(featuredProduct.name)
+                                            .font(.system(size: 14, weight: .regular))
+                                        Text(([featuredProduct.tagline] + Array(featuredProduct.descriptionLines.prefix(2))).joined(separator: "\n"))
+                                            .font(.system(size: 10, weight: .regular))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                     .padding(.leading, 23)
-
-                                HStack {
-                                    Spacer()
-
-                                    RemoteAssetImage(
-                                        urlString: "https://www.figma.com/api/mcp/asset/f9bdb990-ab18-4d77-9aca-3c53b85afc20",
-                                        fallbackSystemName: "gift.fill",
-                                        contentMode: .fit
-                                    )
-                                    .frame(width: 124, height: 143)
-                                    .padding(.top, 8)
-
-                                    Spacer()
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 24, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .padding(.trailing, 18)
+                                    .padding(.bottom, 20)
                                 }
-
-                                Spacer()
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("甜美心意")
-                                        .font(.system(size: 14, weight: .regular))
-                                    Text("經典粉玫瑰花束\n（粉紅玫瑰 + 綠葉 + 韓式白色花紙包裝）")
-                                        .font(.system(size: 10, weight: .regular))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .padding(.leading, 23)
-                                .padding(.bottom, 20)
                             }
+                            .frame(height: 242)
                         }
-                        .frame(height: 242)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 29)
                 .padding(.top, 22)
@@ -811,14 +1427,22 @@ private struct ClassicBouquetsPane: View {
                 }
                 .padding(.horizontal, 20)
 
-                LazyVGrid(columns: columns, spacing: 18) {
-                    ForEach(BouquetProduct.catalog.prefix(6)) { product in
-                        ClassicBouquetTile(product: product) {
-                            appModel.openProduct(product, from: .browse)
+                if appModel.availableBouquetProducts.isEmpty {
+                    Text("Firestore 的 bouquets 暂时没有可展示的经典花束。")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(appModel.availableBouquetProducts.prefix(6)) { product in
+                            ClassicBouquetTile(product: product) {
+                                appModel.openProduct(product, from: .browse)
+                            }
                         }
                     }
+                    .padding(.horizontal, 20)
                 }
-                .padding(.horizontal, 20)
 
                 DIYPromptCard {
                     appModel.openCustomBouquetFlow(from: .browse)
@@ -1045,214 +1669,13 @@ private struct AssistantJourneyScreen: View {
 
     var body: some View {
         MainScreenContainer(selectedTab: appModel.activeTab, appModel: appModel) {
-            ScrollViewReader { proxy in
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        HStack(alignment: .top) {
-                            Button {
-                                appModel.closeOverlay()
-                            } label: {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundColor(FigmaPalette.palePink)
-                                    .frame(width: 28, height: 28)
-                            }
-                            .buttonStyle(.plain)
-
-                            Spacer()
-
-                            Image(systemName: "bell.fill")
-                                .font(.system(size: 30, weight: .bold))
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 18)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("蔚蘭園")
-                                .font(.system(size: 14, weight: .regular))
-                            Text("AI 聊天助手")
-                                .font(.system(size: 29, weight: .bold))
-                        }
-                        .padding(.horizontal, 51)
-
-                        AssistantConversationBlock(
-                            title: "你好！我是你的 AI 花藝助手。我會用結構化方式幫你推薦。請先選擇購買類型。",
-                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
-                        ) {
-                            if visibleStep >= 1 {
-                                OptionGrid(
-                                    options: purchaseTypeOptions,
-                                    selection: Binding(
-                                        get: { appModel.selectedPurchaseType },
-                                        set: { appModel.selectedPurchaseType = $0 }
-                                    )
-                                ) { option in
-                                    choosePurchaseType(option)
-                                }
-                            }
-                        }
-
-                        if pendingStep == 2 {
-                            TypingIndicatorBubble()
-                        }
-
-                        if visibleStep >= 2 {
-                            AssistantReplyBubble(text: "想找 \(appModel.selectedPurchaseType)。")
-
-                            AssistantConversationBlock(
-                                title: "收花對象是誰？你可以點選常見選項，也可以直接輸入。",
-                                iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
-                            ) {
-                                VStack(spacing: 12) {
-                                    OptionGrid(
-                                        options: recipientOptions,
-                                        selection: Binding(
-                                            get: { appModel.selectedRecipient },
-                                            set: { appModel.selectedRecipient = $0 }
-                                        )
-                                    ) { option in
-                                        chooseRecipient(option)
-                                    }
-
-                                    freeTextInput(
-                                        text: $customRecipientText,
-                                        placeholder: "或輸入其他收花對象",
-                                        buttonTitle: "確認收花對象",
-                                        isEnabled: canConfirmCustomRecipient,
-                                        action: confirmCustomRecipient
-                                    )
-                                }
-                            }
-                        }
-
-                        if pendingStep == 3 {
-                            TypingIndicatorBubble()
-                        }
-
-                        if visibleStep >= 3 {
-                            AssistantReplyBubble(text: "收花對象是 \(appModel.selectedRecipient)。")
-
-                            AssistantConversationBlock(
-                                title: "這次送花場合是什麼？你可以點選，也可以自行輸入。",
-                                iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
-                            ) {
-                                VStack(spacing: 12) {
-                                    OptionGrid(
-                                        options: occasionOptions,
-                                        selection: Binding(
-                                            get: { appModel.selectedOccasion },
-                                            set: { appModel.selectedOccasion = $0 }
-                                        )
-                                    ) { option in
-                                        chooseOccasion(option)
-                                    }
-
-                                    freeTextInput(
-                                        text: $customOccasionText,
-                                        placeholder: "或輸入其他送花場合",
-                                        buttonTitle: "確認送花場合",
-                                        isEnabled: canConfirmCustomOccasion,
-                                        action: confirmCustomOccasion
-                                    )
-                                }
-                            }
-                        }
-
-                        if pendingStep == 4 {
-                            TypingIndicatorBubble()
-                        }
-
-                        if visibleStep >= 4 {
-                            AssistantReplyBubble(text: "送花場合是 \(appModel.selectedOccasion)。")
-
-                            AssistantConversationBlock(
-                                title: "想偏向什麼顏色？你可以點選，也可以自行輸入。",
-                                iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
-                            ) {
-                                VStack(spacing: 12) {
-                                    OptionGrid(
-                                        options: colorOptions,
-                                        selection: Binding(
-                                            get: { appModel.selectedColor },
-                                            set: { appModel.selectedColor = $0 }
-                                        )
-                                    ) { option in
-                                        chooseColor(option)
-                                    }
-
-                                    freeTextInput(
-                                        text: $customColorText,
-                                        placeholder: "或輸入其他顏色偏好",
-                                        buttonTitle: "確認顏色偏好",
-                                        isEnabled: canConfirmCustomColor,
-                                        action: confirmCustomColor
-                                    )
-                                }
-                            }
-                        }
-
-                        if pendingStep == 5 {
-                            TypingIndicatorBubble()
-                        }
-
-                        if visibleStep >= 5 {
-                            AssistantReplyBubble(text: "顏色偏好是 \(appModel.selectedColor)。")
-
-                            AssistantConversationBlock(
-                                title: "最後一題，請選擇預算範圍。",
-                                iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
-                            ) {
-                                OptionGrid(
-                                    options: budgetOptions,
-                                    selection: Binding(
-                                        get: { appModel.selectedBudget },
-                                        set: { appModel.selectedBudget = $0 }
-                                    )
-                                ) { option in
-                                    chooseBudget(option)
-                                }
-                            }
-                        }
-
-                        if pendingStep == 6 {
-                            TypingIndicatorBubble(text: "我正在整理最適合你的花束方向...")
-                        }
-
-                        if visibleStep >= 6 {
-                            AssistantRecommendationBubble(
-                                suggestedDesign: suggestedDesignText,
-                                recommendedFlowers: recommendedFlowerTypes,
-                                estimatedPrice: estimatedPriceText,
-                                browseLinkTitle: browseLinkTitle,
-                                onOpenBrowse: {
-                                    appModel.openBrowse(mode: browseMode)
-                                }
-                            )
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 26)
-                        }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id("assistant-bottom")
-                    }
-                    .frame(maxWidth: 402)
-                    .frame(maxWidth: .infinity)
-                }
-                .onChange(of: visibleStep) { _ in
-                    scrollToBottom(proxy)
-                }
-                .onChange(of: pendingStep) { _ in
-                    scrollToBottom(proxy)
-                }
-                .task {
-                    syncCustomInputsFromSelection()
-                    if visibleStep == 0 {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            visibleStep = 1
-                        }
-                    }
-                }
+            switch appModel.assistantFlowStage {
+            case .chat:
+                assistantChatContent
+            case .diy(let step):
+                DIYBouquetDesignContent(appModel: appModel, step: step)
+            case .preview:
+                DIYBouquetPreviewContent(appModel: appModel)
             }
         }
     }
@@ -1269,100 +1692,202 @@ private struct AssistantJourneyScreen: View {
         !customColorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var suggestedDesignText: String {
-        switch appModel.selectedPurchaseType {
-        case "單枝花":
-            return "以 \(appModel.selectedColor) 為主調的單枝花禮，適合送給 \(appModel.selectedRecipient) 作為 \(appModel.selectedOccasion) 心意。"
-        case "自訂":
-            return "為 \(appModel.selectedRecipient) 客製一款 \(appModel.selectedColor) 主調的 \(appModel.selectedOccasion) 花禮，層次感會更突出。"
-        default:
-            return "推薦一束送給 \(appModel.selectedRecipient) 的 \(appModel.selectedColor) \(appModel.selectedOccasion) 花束，整體包裝走精緻柔和路線。"
-        }
-    }
+    private var assistantChatContent: some View {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top) {
+                        Button {
+                            appModel.closeOverlay()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(FigmaPalette.palePink)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
 
-    private var recommendedFlowerTypes: [String] {
-        let recipient = appModel.selectedRecipient
-        let occasion = appModel.selectedOccasion
-        let color = appModel.selectedColor
+                        Spacer()
 
-        if occasion.contains("畢業") {
-            if color.contains("黃") {
-                return ["向日葵", "白滿天星", "尤加利葉"]
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 30, weight: .bold))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 18)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("蔚蘭園")
+                            .font(.system(size: 14, weight: .regular))
+                        Text("AI 聊天助手")
+                            .font(.system(size: 29, weight: .bold))
+                    }
+                    .padding(.horizontal, 51)
+
+                    AssistantConversationBlock(
+                        title: "你好！我是你的 AI 花藝助手。我會先整理你的需求，之後直接帶你進入 DIY 花束設計。請先選擇購買類型。",
+                        iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                    ) {
+                        if visibleStep >= 1 {
+                            OptionGrid(
+                                options: purchaseTypeOptions,
+                                selection: Binding(
+                                    get: { appModel.selectedPurchaseType },
+                                    set: { appModel.selectedPurchaseType = $0 }
+                                )
+                            ) { option in
+                                choosePurchaseType(option)
+                            }
+                        }
+                    }
+
+                    if pendingStep == 2 {
+                        TypingIndicatorBubble()
+                    }
+
+                    if visibleStep >= 2 {
+                        AssistantReplyBubble(text: "想找 \(appModel.selectedPurchaseType)。")
+
+                        AssistantConversationBlock(
+                            title: "收花對象是誰？你可以點選常見選項，也可以直接輸入。",
+                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                        ) {
+                            VStack(spacing: 12) {
+                                OptionGrid(
+                                    options: recipientOptions,
+                                    selection: Binding(
+                                        get: { appModel.selectedRecipient },
+                                        set: { appModel.selectedRecipient = $0 }
+                                    )
+                                ) { option in
+                                    chooseRecipient(option)
+                                }
+
+                                freeTextInput(
+                                    text: $customRecipientText,
+                                    placeholder: "或輸入其他收花對象",
+                                    buttonTitle: "確認收花對象",
+                                    isEnabled: canConfirmCustomRecipient,
+                                    action: confirmCustomRecipient
+                                )
+                            }
+                        }
+                    }
+
+                    if pendingStep == 3 {
+                        TypingIndicatorBubble()
+                    }
+
+                    if visibleStep >= 3 {
+                        AssistantReplyBubble(text: "收花對象是 \(appModel.selectedRecipient)。")
+
+                        AssistantConversationBlock(
+                            title: "這次送花場合是什麼？你可以點選，也可以自行輸入。",
+                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                        ) {
+                            VStack(spacing: 12) {
+                                OptionGrid(
+                                    options: occasionOptions,
+                                    selection: Binding(
+                                        get: { appModel.selectedOccasion },
+                                        set: { appModel.selectedOccasion = $0 }
+                                    )
+                                ) { option in
+                                    chooseOccasion(option)
+                                }
+
+                                freeTextInput(
+                                    text: $customOccasionText,
+                                    placeholder: "或輸入其他送花場合",
+                                    buttonTitle: "確認送花場合",
+                                    isEnabled: canConfirmCustomOccasion,
+                                    action: confirmCustomOccasion
+                                )
+                            }
+                        }
+                    }
+
+                    if pendingStep == 4 {
+                        TypingIndicatorBubble()
+                    }
+
+                    if visibleStep >= 4 {
+                        AssistantReplyBubble(text: "送花場合是 \(appModel.selectedOccasion)。")
+
+                        AssistantConversationBlock(
+                            title: "想偏向什麼顏色？你可以點選，也可以自行輸入。",
+                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                        ) {
+                            VStack(spacing: 12) {
+                                OptionGrid(
+                                    options: colorOptions,
+                                    selection: Binding(
+                                        get: { appModel.selectedColor },
+                                        set: { appModel.selectedColor = $0 }
+                                    )
+                                ) { option in
+                                    chooseColor(option)
+                                }
+
+                                freeTextInput(
+                                    text: $customColorText,
+                                    placeholder: "或輸入其他顏色偏好",
+                                    buttonTitle: "確認顏色偏好",
+                                    isEnabled: canConfirmCustomColor,
+                                    action: confirmCustomColor
+                                )
+                            }
+                        }
+                    }
+
+                    if pendingStep == 5 {
+                        TypingIndicatorBubble()
+                    }
+
+                    if visibleStep >= 5 {
+                        AssistantReplyBubble(text: "顏色偏好是 \(appModel.selectedColor)。")
+
+                        AssistantConversationBlock(
+                            title: "最後一題，請選擇預算範圍。完成後我會直接帶你去 DIY 選花材。",
+                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                        ) {
+                            OptionGrid(
+                                options: budgetOptions,
+                                selection: Binding(
+                                    get: { appModel.selectedBudget },
+                                    set: { appModel.selectedBudget = $0 }
+                                )
+                            ) { option in
+                                chooseBudget(option)
+                            }
+                        }
+                    }
+
+                    if pendingStep == 6 {
+                        TypingIndicatorBubble(text: "我先幫你整理建議，下一步直接去 DIY 花束設計...")
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id("assistant-bottom")
+                }
+                .frame(maxWidth: 402)
+                .frame(maxWidth: .infinity)
             }
-            if color.contains("粉") {
-                return ["向日葵", "粉郁金香", "粉滿天星"]
+            .onChange(of: visibleStep) {
+                scrollToBottom(proxy)
             }
-            return ["向日葵", "白滿天星", "尤加利葉"]
-        }
-
-        if occasion.contains("紀念") || recipient.contains("伴侶") {
-            if color.contains("紅") {
-                return ["紅玫瑰", "紅郁金香", "白滿天星"]
+            .onChange(of: pendingStep) {
+                scrollToBottom(proxy)
             }
-            if color.contains("白") || color.contains("綠") {
-                return ["白玫瑰", "白百合", "尤加利葉"]
+            .task {
+                syncCustomInputsFromSelection()
+                if visibleStep == 0 {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        visibleStep = 1
+                    }
+                }
             }
-            return ["粉玫瑰", "粉郁金香", "粉滿天星"]
         }
-
-        if recipient.contains("家人") || occasion.contains("感謝") {
-            if color.contains("白") || color.contains("綠") {
-                return ["白百合", "白滿天星", "尤加利葉"]
-            }
-            return ["粉康乃馨", "粉百合", "尤加利葉"]
-        }
-
-        if color.contains("藍") {
-            return ["藍繡球", "白滿天星", "尤加利葉"]
-        }
-        if color.contains("紅") {
-            return ["紅玫瑰", "白百合", "尤加利葉"]
-        }
-        if color.contains("白") || color.contains("綠") {
-            return ["白玫瑰", "白百合", "尤加利葉"]
-        }
-        if color.contains("黃") {
-            return ["向日葵", "香檳玫瑰", "尤加利葉"]
-        }
-
-        return ["粉玫瑰", "粉百合", "粉滿天星"]
-    }
-
-    private var estimatedPriceText: String {
-        switch (appModel.selectedPurchaseType, appModel.selectedBudget) {
-        case ("單枝花", "小於港幣100元"):
-            return "約 HKD 68-98"
-        case ("單枝花", "港幣100-200元"):
-            return "約 HKD 128-168"
-        case ("單枝花", "港幣200-300元"):
-            return "約 HKD 188-228"
-        case ("單枝花", _):
-            return "約 HKD 320+"
-        case ("自訂", "小於港幣100元"):
-            return "約 HKD 108"
-        case ("自訂", "港幣100-200元"):
-            return "約 HKD 188-218"
-        case ("自訂", "港幣200-300元"):
-            return "約 HKD 268-298"
-        case ("自訂", _):
-            return "約 HKD 398+"
-        case (_, "小於港幣100元"):
-            return "約 HKD 98"
-        case (_, "港幣100-200元"):
-            return "約 HKD 168-198"
-        case (_, "港幣200-300元"):
-            return "約 HKD 238-288"
-        default:
-            return "約 HKD 368+"
-        }
-    }
-
-    private var browseMode: FigmaCustomerAppModel.BrowseMode {
-        appModel.selectedPurchaseType == "單枝花" ? .materials : .bouquets
-    }
-
-    private var browseLinkTitle: String {
-        appModel.selectedPurchaseType == "單枝花" ? "前往商品瀏覽頁查看單花" : "前往商品瀏覽頁查看花束"
     }
 
     @ViewBuilder
@@ -1438,7 +1963,11 @@ private struct AssistantJourneyScreen: View {
 
     private func chooseBudget(_ option: String) {
         appModel.selectedBudget = option
-        reveal(step: 6)
+        pendingStep = 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            pendingStep = nil
+            appModel.proceedToDIYDesigner()
+        }
     }
 
     private func reveal(step: Int) {
@@ -2311,6 +2840,1012 @@ private struct AssistantRecommendationBubble: View {
                 .foregroundColor(.black.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+enum DIYStep: Int, Equatable {
+    case flowers = 1
+    case wrapping
+    case card
+    case confirm
+
+    var title: String {
+        switch self {
+        case .flowers:
+            return "步驟一：選擇花材種類"
+        case .wrapping:
+            return "步驟二：選擇包裝紙"
+        case .card:
+            return "步驟三：撰寫賀卡"
+        case .confirm:
+            return "步驟四：確認花束"
+        }
+    }
+
+    var progress: CGFloat {
+        switch self {
+        case .flowers:
+            return 0.26
+        case .wrapping:
+            return 0.58
+        case .card:
+            return 0.82
+        case .confirm:
+            return 0.96
+        }
+    }
+
+    var next: DIYStep? {
+        switch self {
+        case .flowers:
+            return .wrapping
+        case .wrapping:
+            return .card
+        case .card:
+            return .confirm
+        case .confirm:
+            return nil
+        }
+    }
+
+    var previous: DIYStep? {
+        switch self {
+        case .flowers:
+            return nil
+        case .wrapping:
+            return .flowers
+        case .card:
+            return .wrapping
+        case .confirm:
+            return .card
+        }
+    }
+}
+
+struct SelectedFlowerLine: Identifiable {
+    let flower: Flower
+    let quantity: Int
+
+    var id: String { flower.id }
+    var subtotal: Double { Double(quantity) * flower.price }
+}
+
+struct BouquetWrappingOption: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let imageURL: String
+    let price: Double
+    
+    init(id: String, name: String, imageURL: String, price: Double) {
+        self.id = id
+        self.name = name
+        self.imageURL = imageURL
+        self.price = price
+    }
+    
+    init(_ data: StorefrontWrappingOptionData) {
+        self.id = data.id
+        self.name = data.name
+        self.imageURL = data.imageURL
+        self.price = data.price
+    }
+    
+    var hasReferenceImage: Bool {
+        !imageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    var referenceURL: URL? {
+        URL(string: imageURL.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    static let options: [BouquetWrappingOption] = [
+        BouquetWrappingOption(id: "pearl-white", name: "珍珠白", imageURL: "https://www.figma.com/api/mcp/asset/c272f95b-2672-4259-afd4-47d0c823b04e", price: 18),
+        BouquetWrappingOption(id: "blush-pink", name: "柔粉", imageURL: "https://www.figma.com/api/mcp/asset/f1de3fe9-bb61-4ab0-843c-f655b597bbc1", price: 28),
+        BouquetWrappingOption(id: "mist-lilac", name: "雾紫", imageURL: "https://www.figma.com/api/mcp/asset/db278570-ba57-4f41-95a6-f84015089b74", price: 26),
+        BouquetWrappingOption(id: "champagne-gold", name: "香槟金", imageURL: "https://www.figma.com/api/mcp/asset/129bb7e4-e81c-461d-b7f0-e131d7d848f4", price: 30),
+        BouquetWrappingOption(id: "midnight-black", name: "经典黑", imageURL: "https://www.figma.com/api/mcp/asset/a226c571-2fcf-4c5c-acd5-415845eb150a", price: 32),
+        BouquetWrappingOption(id: "fog-gray", name: "雾灰", imageURL: "https://www.figma.com/api/mcp/asset/e7139e31-f1ae-44dd-9271-02d1cc18343c", price: 24)
+    ]
+}
+
+struct CardBlessingTemplate: Identifiable {
+    let id: String
+    let message: String
+
+    static let templates: [CardBlessingTemplate] = [
+        CardBlessingTemplate(id: "graduation", message: "恭喜你畢業！祝你在人生的新階段一切順利、幸福美滿。"),
+        CardBlessingTemplate(id: "gratitude", message: "感謝你一直以來的付出，你的善意對我意義重大。"),
+        CardBlessingTemplate(id: "love", message: "送上滿滿的愛與祝福，你讓每一天都更美好。")
+    ]
+}
+
+private struct DIYBouquetDesignContent: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+    let step: DIYStep
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                DIYFlowHeader(onBack: appModel.closeOverlay)
+                DIYProgressSection(
+                    step: step,
+                    priceText: "HKD \(Int(appModel.diyTotalPrice.rounded()))",
+                    onPrevious: handleProgressBack,
+                    onNext: handleNext,
+                    showsPrevious: true,
+                    showsNext: step.next != nil,
+                    previousEnabled: true,
+                    nextEnabled: nextEnabled
+                )
+
+                switch step {
+                case .flowers:
+                    flowerSelectionContent
+                case .wrapping:
+                    wrappingSelectionContent
+                case .card:
+                    greetingCardContent
+                case .confirm:
+                    confirmationContent
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 30)
+            .frame(maxWidth: 402)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var nextEnabled: Bool {
+        switch step {
+        case .flowers:
+            return appModel.canAdvanceFromFlowerStep
+        case .wrapping:
+            return appModel.canAdvanceFromWrappingStep
+        case .card:
+            return true
+        case .confirm:
+            return false
+        }
+    }
+
+    private var flowerSelectionContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DIYAssistantSummaryCard(
+                title: "AI 摘要",
+                subtitle: appModel.suggestedDesignText,
+                detail: "建議花材：\(appModel.recommendedFlowerTypes.joined(separator: "、"))"
+            )
+
+            HStack(alignment: .top, spacing: 14) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 10) {
+                        ForEach(appModel.diyFlowerCategories, id: \.self) { category in
+                            FlowerSidebarButton(
+                                title: category.displayName,
+                                isSelected: appModel.selectedDIYFlowerCategory == category
+                            ) {
+                                appModel.selectedDIYFlowerCategory = category
+                            }
+                        }
+                    }
+                    .padding(.vertical, 14)
+                    .padding(.horizontal, 8)
+                }
+                .frame(width: 92, height: 510)
+                .background(FigmaPalette.softPink.opacity(0.42))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                VStack(spacing: 14) {
+                    ForEach(appModel.diyFlowers) { flower in
+                        DIYFlowerCard(
+                            flower: flower,
+                            quantity: appModel.quantity(for: flower),
+                            onIncrement: {
+                                appModel.increaseFlowerQuantity(flower)
+                            },
+                            onDecrement: {
+                                appModel.decreaseFlowerQuantity(flower)
+                            }
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var wrappingSelectionContent: some View {
+        Group {
+            if appModel.availableWrappingOptions.isEmpty {
+                Text("请先在 Firestore 的 settings/wrapping_options 配好包装名称、价格和参考图。")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)], spacing: 24) {
+                    ForEach(appModel.availableWrappingOptions) { option in
+                        DIYWrappingOptionCard(
+                            option: option,
+                            isSelected: appModel.selectedWrappingOptionID == option.id,
+                            onIncrement: {
+                                appModel.selectedWrappingOptionID = option.id
+                            },
+                            onDecrement: {
+                                if appModel.selectedWrappingOptionID == option.id {
+                                    appModel.selectedWrappingOptionID = nil
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private var greetingCardContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("為花束附上一段個人祝福")
+                .font(.system(size: 14, weight: .medium))
+
+            VStack(alignment: .leading, spacing: 10) {
+                DIYCheckboxRow(
+                    title: "不用，謝謝",
+                    isSelected: !appModel.includeGreetingCard
+                ) {
+                    appModel.toggleGreetingCard(false)
+                }
+
+                DIYCheckboxRow(
+                    title: "是的，加入賀卡",
+                    isSelected: appModel.includeGreetingCard
+                ) {
+                    appModel.toggleGreetingCard(true)
+                }
+            }
+
+            ZStack(alignment: .topLeading) {
+                if appModel.cardMessage.isEmpty {
+                    Text("範例：「畢業快樂！為你感到驕傲。」")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(.black.opacity(0.55))
+                        .padding(.horizontal, 18)
+                        .padding(.top, 16)
+                }
+
+                TextEditor(text: $appModel.cardMessage)
+                    .font(.system(size: 14, weight: .regular))
+                    .frame(height: 130)
+                    .scrollContentBackground(.hidden)
+                    .padding(12)
+                    .background(Color.white)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.black.opacity(0.55), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .disabled(!appModel.includeGreetingCard)
+            .opacity(appModel.includeGreetingCard ? 1 : 0.55)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("快速祝福：")
+                    .font(.system(size: 14, weight: .bold))
+
+                ForEach(CardBlessingTemplate.templates) { template in
+                    DIYBlessingTemplateRow(
+                        text: template.message,
+                        isSelected: appModel.selectedBlessingTemplateID == template.id
+                    ) {
+                        appModel.applyBlessingTemplate(template)
+                    }
+                }
+            }
+
+            RemoteAssetImage(
+                urlString: "https://www.figma.com/api/mcp/asset/698fbb1b-dea1-4652-a36b-1715b1f4fac6",
+                fallbackSystemName: "envelope.fill",
+                contentMode: .fill
+            )
+            .frame(height: 180)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private var confirmationContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: "party.popper.fill")
+                    .font(.system(size: 34, weight: .regular))
+                    .foregroundColor(FigmaPalette.hotPink)
+                    .frame(width: 44)
+
+                Text("你的第一束自訂花束！")
+                    .font(.system(size: 26, weight: .bold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(appModel.customBouquetHeadline)
+                    .font(.system(size: 20, weight: .semibold))
+
+                ForEach(appModel.selectedDIYFlowers) { line in
+                    Text("\(line.quantity) 枝 \(line.flower.name)")
+                        .font(.system(size: 16, weight: .regular))
+                }
+
+                if let wrapping = appModel.selectedWrappingOption {
+                    Text("包裝：\(wrapping.name)")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(.secondary)
+                }
+
+                if appModel.includeGreetingCard {
+                    Text("賀卡：已加入")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("價格明細")
+                    .font(.system(size: 20, weight: .bold))
+
+                ForEach(appModel.selectedDIYFlowers) { line in
+                    HStack {
+                        Text(line.flower.name)
+                        Spacer()
+                        Text("\(line.quantity) x HKD \(Int(line.flower.price.rounded()))")
+                    }
+                    .font(.system(size: 15, weight: .medium))
+                }
+
+                HStack {
+                    Text("花藝製作費")
+                    Spacer()
+                    Text("HKD \(Int(appModel.arrangementFee.rounded()))")
+                }
+                .font(.system(size: 15, weight: .medium))
+
+                HStack {
+                    Text("包裝紙")
+                    Spacer()
+                    Text("HKD \(Int(appModel.wrappingFee.rounded()))")
+                }
+                .font(.system(size: 15, weight: .medium))
+
+                HStack {
+                    Text("賀卡（可選）")
+                    Spacer()
+                    Text("HKD \(Int(appModel.greetingCardFee.rounded()))")
+                }
+                .font(.system(size: 15, weight: .medium))
+            }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(FigmaPalette.softPink.opacity(0.35))
+            )
+
+            ForEach(appModel.missingPreviewReferenceMessages, id: \.self) { message in
+                Text(message)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.red)
+            }
+
+            if let errorMessage = appModel.previewErrorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.red)
+            }
+
+            Button {
+                Task {
+                    await appModel.generateDIYPreview()
+                }
+            } label: {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.black, lineWidth: 1)
+                    .frame(height: 48)
+                    .overlay {
+                        HStack(spacing: 8) {
+                            if appModel.isGeneratingPreview {
+                                ProgressView()
+                                    .tint(.black)
+                            }
+                            Text(appModel.isGeneratingPreview ? "正在生成預覽..." : "預覽你的花束")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundColor(.black)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .disabled(appModel.isGeneratingPreview || !appModel.canGenerateDIYPreview)
+
+            Button {
+                appModel.addCustomBouquetToCart()
+            } label: {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.black, lineWidth: 1)
+                    .frame(height: 48)
+                    .overlay {
+                        Text("加入購物車")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.black)
+                    }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func handleProgressBack() {
+        appModel.stepBackInDIYFlow(from: step)
+    }
+
+    private func handleNext() {
+        guard let nextStep = step.next else { return }
+        switch step {
+        case .flowers:
+            guard appModel.canAdvanceFromFlowerStep else { return }
+        case .wrapping:
+            guard appModel.canAdvanceFromWrappingStep else { return }
+        case .card, .confirm:
+            break
+        }
+        appModel.navigateToDIYStep(nextStep)
+    }
+}
+
+private struct DIYBouquetPreviewContent: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                DIYFlowHeader {
+                    appModel.closeOverlay()
+                }
+
+                DIYProgressSection(
+                    step: .confirm,
+                    priceText: "HKD \(Int(appModel.diyTotalPrice.rounded()))",
+                    onPrevious: appModel.returnToConfirmStep,
+                    onNext: nil,
+                    showsPrevious: true,
+                    showsNext: false,
+                    previousEnabled: true,
+                    nextEnabled: false
+                )
+
+                ZStack {
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .fill(FigmaPalette.softPink)
+
+                    VStack(spacing: 16) {
+                        previewImage
+
+                        VStack(spacing: 8) {
+                            Button {
+                                Task {
+                                    await appModel.generateDIYPreview()
+                                }
+                            } label: {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.white.opacity(0.45))
+                                    .frame(height: 38)
+                                    .overlay {
+                                        HStack(spacing: 8) {
+                                            if appModel.isGeneratingPreview {
+                                                ProgressView()
+                                                    .tint(.white)
+                                            }
+                                            Text(appModel.isGeneratingPreview ? "重新生成中..." : "重新生成預覽")
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+
+                            Text("預覽剩餘次數：1 次")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.85))
+
+                            Button {
+                                appModel.returnToConfirmStep()
+                            } label: {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.white.opacity(0.45))
+                                    .frame(height: 38)
+                                    .overlay {
+                                        Text("編輯設計")
+                                            .font(.system(size: 14, weight: .bold))
+                                            .foregroundColor(.white)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 62)
+
+                        Button {
+                            appModel.addCustomBouquetToCart()
+                        } label: {
+                            Capsule(style: .continuous)
+                                .fill(Color.black)
+                                .frame(height: 44)
+                                .overlay {
+                                    Text("加入購物車")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 62)
+
+                        Button {
+                            appModel.addCustomBouquetToCartAndOpenCart()
+                        } label: {
+                            Capsule(style: .continuous)
+                                .stroke(Color.black, lineWidth: 1)
+                                .frame(height: 44)
+                                .overlay {
+                                    Text("前往付款")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(.black)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 62)
+
+                        Button {
+                            appModel.presentPreviewDisclaimerOverlay()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text("免責聲明")
+                                    .font(.system(size: 14, weight: .bold))
+                                Image(systemName: "exclamationmark.circle")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                            .foregroundColor(.red.opacity(0.82))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 26)
+                    .padding(.horizontal, 18)
+
+                    if appModel.showPreviewDisclaimer {
+                        DIYPreviewDisclaimerOverlay {
+                            appModel.dismissPreviewDisclaimerOverlay()
+                        }
+                        .padding(.horizontal, 18)
+                    }
+                }
+                .frame(height: 560)
+
+                if let errorMessage = appModel.previewErrorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.red)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 30)
+            .frame(maxWidth: 402)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var previewImage: some View {
+        if let preview = appModel.generatedPreview {
+            AsyncImage(url: preview.imageURL) { phase in
+                switch phase {
+                case .empty:
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.55))
+                        .overlay(ProgressView())
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                case .failure:
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.55))
+                        .overlay(Image(systemName: "photo"))
+                @unknown default:
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Color.white.opacity(0.55))
+                }
+            }
+            .frame(height: 250)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color.white.opacity(0.55))
+                .frame(height: 250)
+                .overlay {
+                    Text("預覽圖載入中")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.black.opacity(0.6))
+                }
+        }
+    }
+}
+
+private struct DIYFlowHeader: View {
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(FigmaPalette.palePink)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Image(systemName: "bell.fill")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(.black)
+        }
+        .overlay(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("蔚蘭園")
+                    .font(.system(size: 14, weight: .regular))
+                Text("DIY 花束設計")
+                    .font(.system(size: 29, weight: .bold))
+            }
+            .padding(.leading, 28)
+            .offset(y: 38)
+        }
+        .padding(.top, 18)
+        .padding(.bottom, 42)
+    }
+}
+
+private struct DIYProgressSection: View {
+    let step: DIYStep
+    let priceText: String
+    let onPrevious: (() -> Void)?
+    let onNext: (() -> Void)?
+    let showsPrevious: Bool
+    let showsNext: Bool
+    let previousEnabled: Bool
+    let nextEnabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(step.title)
+                .font(.system(size: 14, weight: .bold))
+
+            HStack(spacing: 12) {
+                if showsPrevious, let onPrevious {
+                    Button(action: onPrevious) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundColor(previousEnabled ? .black : .black.opacity(0.25))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!previousEnabled)
+                }
+
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule(style: .continuous)
+                            .stroke(Color.black, lineWidth: 1)
+                            .frame(height: 15)
+
+                        Capsule(style: .continuous)
+                            .fill(Color.black)
+                            .frame(width: max(30, proxy.size.width * step.progress), height: 7)
+                            .padding(.leading, 6)
+                            .padding(.vertical, 4)
+
+                        Image(systemName: "leaf.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(FigmaPalette.hotPink)
+                            .offset(x: max(18, proxy.size.width * step.progress) - 18, y: 1)
+                    }
+                }
+                .frame(height: 16)
+
+                if showsNext, let onNext {
+                    Button(action: onNext) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundColor(nextEnabled ? .black : .black.opacity(0.25))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!nextEnabled)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Text(priceText)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color.black)
+                    .clipShape(Capsule(style: .continuous))
+                Spacer()
+            }
+        }
+    }
+}
+
+private struct DIYAssistantSummaryCard: View {
+    let title: String
+    let subtitle: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 14, weight: .bold))
+            Text(subtitle)
+                .font(.system(size: 13, weight: .medium))
+            Text(detail)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(FigmaPalette.softPink.opacity(0.35))
+        )
+    }
+}
+
+private struct DIYFlowerCard: View {
+    let flower: Flower
+    let quantity: Int
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            flowerImage
+                .frame(width: 82, height: 82)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(flower.name)
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.black)
+                        Text("\(flower.categoryDisplayName) · \(flower.unitDisplayName)")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text("HKD \(Int(flower.price.rounded())) / \(flower.unitDisplayName)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.black)
+                }
+
+                if let stockQuantity = flower.stockQuantity {
+                    Text("剩餘\(stockQuantity)\(flower.unitDisplayName)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.black)
+                }
+
+                DIYMiniStepper(quantity: quantity, onIncrement: onIncrement, onDecrement: onDecrement)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.white)
+        )
+    }
+
+    @ViewBuilder
+    private var flowerImage: some View {
+        if let imageURL = flower.imageURL {
+            AsyncImage(url: imageURL) { phase in
+                switch phase {
+                case .empty:
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(flower.color.opacity(0.18))
+                        .overlay(ProgressView())
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                case .failure:
+                    fallbackImage
+                @unknown default:
+                    fallbackImage
+                }
+            }
+        } else {
+            fallbackImage
+        }
+    }
+
+    private var fallbackImage: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(flower.color.opacity(0.18))
+            Text(flower.emoji)
+                .font(.system(size: 38))
+        }
+    }
+}
+
+private struct DIYWrappingOptionCard: View {
+    let option: BouquetWrappingOption
+    let isSelected: Bool
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            RemoteAssetImage(
+                urlString: option.imageURL,
+                fallbackSystemName: "gift",
+                contentMode: .fill
+            )
+            .frame(height: 138)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Text(option.name)
+                .font(.system(size: 14, weight: .bold))
+
+            DIYMiniStepper(
+                quantity: isSelected ? 1 : 0,
+                onIncrement: onIncrement,
+                onDecrement: onDecrement
+            )
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(isSelected ? Color.black : Color.clear, lineWidth: 1.2)
+                )
+        )
+    }
+}
+
+private struct DIYMiniStepper: View {
+    let quantity: Int
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onDecrement) {
+                Text("−")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.black)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+
+            Text("\(quantity)")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.black)
+                .frame(minWidth: 14)
+
+            Button(action: onIncrement) {
+                Text("+")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.black)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+private struct DIYCheckboxRow: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundColor(isSelected ? .black : .gray)
+
+                Text(title)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundColor(.black)
+
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DIYBlessingTemplateRow: View {
+    let text: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(isSelected ? .black : .gray)
+                    .padding(.top, 2)
+
+                Text(text)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.black)
+                    .multilineTextAlignment(.leading)
+
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DIYPreviewDisclaimerOverlay: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
+            .fill(Color.white.opacity(0.92))
+            .overlay {
+                VStack(spacing: 14) {
+                    HStack {
+                        Spacer()
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.red.opacity(0.72))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Text("免責聲明")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.red.opacity(0.75))
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("• 本頁面所展示的花束效果圖為 AI 生成的示意圖，僅用於幫助顧客想像花束設計的整體效果。")
+                        Text("• 由於花材本身的自然差異，實際花束在花朵大小、形狀及排列方式上可能會與預覽略有不同。")
+                        Text("• 花材的顏色與質感可能會因季節供應情況或店內燈光環境而出現輕微差異。")
+                        Text("• 所有花束均由花藝師手工製作，因此在最終呈現的排列細節上出現少量變化屬正常情況。")
+                        Text("• 若部分花材因季節或供應問題暫時缺貨，花店可能會以相似花材替代，但會盡量保持整體風格與設計一致。")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.red.opacity(0.74))
+                    .multilineTextAlignment(.center)
+
+                    Button(action: onDismiss) {
+                        Capsule(style: .continuous)
+                            .fill(FigmaPalette.softPink)
+                            .frame(height: 38)
+                            .overlay {
+                                Text("我知道了，查看完整預覽")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(20)
+            }
     }
 }
 

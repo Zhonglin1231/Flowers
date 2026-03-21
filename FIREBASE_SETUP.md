@@ -89,7 +89,7 @@
 }
 ```
 
-### bouquets（保存的花束设计）
+### bouquets（保存的花束设计 / 店铺展示花束）
 ```json
 {
   "name": "我的花束",
@@ -99,7 +99,39 @@
   "note": "生日快乐",
   "createdAt": Timestamp,
   "userId": "user_id",
-  "totalPrice": 168.0
+  "totalPrice": 168.0,
+  "imageURL": "https://...",
+  "tagline": "柔和粉白玫瑰的浪漫花束",
+  "descriptionLines": ["粉紅玫瑰 x6", "白玫瑰 x3", "韓式包裝"],
+  "longDescription": ["適合生日與紀念日", "整體風格柔和自然"],
+  "isPublished": true
+}
+```
+
+### settings / ai_preview（商家维护 AI 预览配置）
+文档路径：`settings/ai_preview`
+
+```json
+{
+  "apiKey": "你的 Ark API Key",
+  "modelName": "doubao-seedream-5-0-250428",
+  "isEnabled": true
+}
+```
+
+### settings / wrapping_options（DIY 包装配置）
+文档路径：`settings/wrapping_options`
+
+```json
+{
+  "options": [
+    {
+      "id": "pearl-white",
+      "name": "珍珠白",
+      "imageURL": "https://...",
+      "price": 18
+    }
+  ]
 }
 ```
 

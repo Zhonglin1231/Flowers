@@ -55,8 +55,10 @@ struct AIBouquetPreviewService {
     func generatePreview(
         requirement: String,
         selections: [AIBouquetSelection],
+        wrappingOption: BouquetWrappingOption?,
         apiKey: String,
-        modelName: String
+        modelName: String,
+        requireReferenceImages: Bool = false
     ) async throws -> AIGeneratedPreview {
         let cleanedKey = sanitizeAPIKey(apiKey)
         guard !cleanedKey.isEmpty else {
@@ -71,9 +73,22 @@ struct AIBouquetPreviewService {
         guard !chosenSelections.isEmpty else {
             throw AIPreviewError.missingFlowers
         }
+
+        let missingReferenceFlowers = chosenSelections
+            .filter { !$0.flower.hasReferenceImage }
+            .map(\.flower.name)
+        if requireReferenceImages, !missingReferenceFlowers.isEmpty {
+            throw AIPreviewError.missingFlowerReferenceImages(missingReferenceFlowers)
+        }
+        if requireReferenceImages, wrappingOption?.hasReferenceImage != true {
+            throw AIPreviewError.missingWrappingReferenceImage(wrappingOption?.name)
+        }
         
-        let referencePreparation = await prepareReferenceImages(from: chosenSelections)
-        let prompt = buildPrompt(requirement: requirement, selections: chosenSelections)
+        let referencePreparation = await prepareReferenceImages(from: chosenSelections, wrappingOption: wrappingOption)
+        if requireReferenceImages, referencePreparation.payloads.count < referencePreparation.expectedCount {
+            throw AIPreviewError.referenceImageUnavailable
+        }
+        let prompt = buildPrompt(requirement: requirement, selections: chosenSelections, wrappingOption: wrappingOption)
         let requestBody = ArkImageGenerationRequest(
             model: modelName,
             prompt: prompt,
@@ -190,19 +205,22 @@ struct AIBouquetPreviewService {
         }
     }
     
-    private func buildPrompt(requirement: String, selections: [AIBouquetSelection]) -> String {
+    private func buildPrompt(requirement: String, selections: [AIBouquetSelection], wrappingOption: BouquetWrappingOption?) -> String {
         let selectedSummary = selections.map {
             "\($0.flower.name) x\($0.quantity)"
         }
         .joined(separator: "、")
-        
-        let userRequirement = requirement.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requirementText = userRequirement.isEmpty ? "请生成一束高级感、写实风格的手持花束预览图" : userRequirement
+        let wrappingDescription = wrappingOption?.name
+            ?? requirement.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wrappingLine = wrappingDescription.isEmpty
+            ? ""
+            : "包装必须使用参考图对应的\(wrappingDescription)。"
         
         return """
-        请生成一张写实、高级感、适合花店下单前预览的花束效果图。用户需求：\(requirementText)。\
-        花束中优先体现这些花材：\(selectedSummary)。\
-        如果提供了参考图，请尽量保留参考花材的真实花型、颜色和质感；整体构图为单束花束正面展示，包装完整，花材层次分明，光线自然，画面干净，不要出现人物，不要出现多束花。
+        请生成一张写实、高级感、适合花店下单前预览的花束效果图。\
+        花束中必须体现这些实际已选花材：\(selectedSummary)。\
+        \(wrappingLine)\
+        如果提供了参考图，请严格以参考图里的真实花型、颜色、质感、品种和包装样式为准，不要凭空替换成其他花材或包装；整体构图为单束花束正面展示，包装完整，花材层次分明，光线自然，画面干净，不要出现人物，不要出现多束花。
         """
     }
     
@@ -247,7 +265,7 @@ struct AIBouquetPreviewService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    private func uniqueReferenceImages(from selections: [AIBouquetSelection]) -> [URL] {
+    private func uniqueReferenceImages(from selections: [AIBouquetSelection], wrappingOption: BouquetWrappingOption?) -> [URL] {
         var seen = Set<String>()
         var urls: [URL] = []
         
@@ -258,11 +276,16 @@ struct AIBouquetPreviewService {
             }
         }
         
+        if let wrappingURL = wrappingOption?.referenceURL,
+           seen.insert(wrappingURL.absoluteString).inserted {
+            urls.append(wrappingURL)
+        }
+        
         return urls
     }
     
-    private func prepareReferenceImages(from selections: [AIBouquetSelection]) async -> (payloads: [String], sourceURLs: [URL]) {
-        let candidateURLs = Array(uniqueReferenceImages(from: selections).prefix(4))
+    private func prepareReferenceImages(from selections: [AIBouquetSelection], wrappingOption: BouquetWrappingOption?) async -> (payloads: [String], sourceURLs: [URL], expectedCount: Int) {
+        let candidateURLs = uniqueReferenceImages(from: selections, wrappingOption: wrappingOption)
         var payloads: [String] = []
         var sourceURLs: [URL] = []
         
@@ -274,7 +297,7 @@ struct AIBouquetPreviewService {
             sourceURLs.append(url)
         }
         
-        return (payloads, sourceURLs)
+        return (payloads, sourceURLs, candidateURLs.count)
     }
     
     private func downloadAndEncodeImage(from url: URL) async -> String? {
@@ -397,6 +420,9 @@ private struct ArkImageGenerationResponse: Decodable {
 enum AIPreviewError: LocalizedError {
     case missingAPIKey
     case missingFlowers
+    case missingFlowerReferenceImages([String])
+    case missingWrappingReferenceImage(String?)
+    case referenceImageUnavailable
     case invalidAPIKeyFormat(String)
     case invalidResponse
     case serverError(String)
@@ -407,6 +433,15 @@ enum AIPreviewError: LocalizedError {
             return "请输入 ARK API Key 后再生成预览。"
         case .missingFlowers:
             return "请至少选择一款花材后再生成预览。"
+        case .missingFlowerReferenceImages(let flowerNames):
+            return "这些已选花材还没有参考图，当前不能生成真实预览：\(flowerNames.joined(separator: "、"))。"
+        case .missingWrappingReferenceImage(let wrappingName):
+            if let wrappingName, !wrappingName.isEmpty {
+                return "包装“\(wrappingName)”还没有 Firestore 参考图，当前不能生成真实预览。"
+            }
+            return "当前所选包装没有 Firestore 参考图，不能生成真实预览。"
+        case .referenceImageUnavailable:
+            return "当前无法拿到 Firestore 里的花材或包装参考图，请检查图片链接后再试。"
         case .invalidAPIKeyFormat(let message):
             return message
         case .invalidResponse:
