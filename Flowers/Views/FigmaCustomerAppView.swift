@@ -93,9 +93,10 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var cartItems: [CartItem] = []
     @Published var browseMode: BrowseMode = .materials
     @Published var selectedFlowerCategory: FlowerCategory?
+    @Published var selectedPurchaseType = "花束"
+    @Published var selectedRecipient = "朋友"
     @Published var selectedOccasion = "生日"
-    @Published var selectedPalette = "粉色"
-    @Published var selectedMood = "浪漫"
+    @Published var selectedColor = "粉色"
     @Published var selectedBudget = "港幣100-200元"
 
     var canLogin: Bool {
@@ -150,6 +151,7 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     func openCustomBouquetFlow(from tab: MainTab = .assistant) {
         activeTab = tab
+        resetAssistantSelections()
         overlayScreen = .assistantJourney
     }
 
@@ -168,12 +170,33 @@ final class FigmaCustomerAppModel: ObservableObject {
         overlayScreen = nil
     }
 
-    func addSelectedProductToCart() {
-        if let index = cartItems.firstIndex(where: { $0.product.id == selectedProduct.id }) {
+    func cartQuantity(for productID: String) -> Int {
+        cartItems.first(where: { $0.product.id == productID })?.quantity ?? 0
+    }
+
+    func cartQuantity(for flower: Flower) -> Int {
+        cartQuantity(for: BouquetProduct.fromFlower(flower).id)
+    }
+
+    func addProductToCart(_ product: BouquetProduct) {
+        if let index = cartItems.firstIndex(where: { $0.product.id == product.id }) {
             cartItems[index].quantity += 1
         } else {
-            cartItems.append(CartItem(product: selectedProduct, quantity: 1))
+            cartItems.append(CartItem(product: product, quantity: 1))
         }
+    }
+
+    func removeProductFromCart(_ product: BouquetProduct) {
+        guard let index = cartItems.firstIndex(where: { $0.product.id == product.id }) else { return }
+        if cartItems[index].quantity > 1 {
+            cartItems[index].quantity -= 1
+        } else {
+            cartItems.remove(at: index)
+        }
+    }
+
+    func addSelectedProductToCart() {
+        addProductToCart(selectedProduct)
     }
 
     func proceedToCart() {
@@ -187,8 +210,19 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func addFlowerToCart(_ flower: Flower) {
-        selectedProduct = BouquetProduct.fromFlower(flower)
-        addSelectedProductToCart()
+        addProductToCart(BouquetProduct.fromFlower(flower))
+    }
+
+    func removeFlowerFromCart(_ flower: Flower) {
+        removeProductFromCart(BouquetProduct.fromFlower(flower))
+    }
+
+    func resetAssistantSelections() {
+        selectedPurchaseType = "花束"
+        selectedRecipient = "朋友"
+        selectedOccasion = "生日"
+        selectedColor = "粉色"
+        selectedBudget = "港幣100-200元"
     }
 }
 
@@ -726,9 +760,16 @@ private struct MaterialsPane: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 14) {
                     ForEach(appModel.filteredFlowers) { flower in
-                        FlowerCatalogCard(flower: flower) {
-                            appModel.addFlowerToCart(flower)
-                        }
+                        FlowerCatalogCard(
+                            flower: flower,
+                            quantity: appModel.cartQuantity(for: flower),
+                            onIncrement: {
+                                appModel.addFlowerToCart(flower)
+                            },
+                            onDecrement: {
+                                appModel.removeFlowerFromCart(flower)
+                            }
+                        )
                     }
                 }
                 .padding(.horizontal, 16)
@@ -962,22 +1003,16 @@ private struct AssistantIntroScreen: View {
 
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
-                            .frame(width: 206, height: 42)
+                            .frame(width: 228, height: 56)
                             .overlay(alignment: .leading) {
-                                Text("你好！我是你的 AI 花藝助手。請問您今天需要：")
+                                Text("你好！我是你的 AI 花藝助手。我會按購買類型、對象、場合、顏色與預算逐步推薦。")
                                     .font(.system(size: 11, weight: .bold))
                                     .multilineTextAlignment(.leading)
                                     .padding(.horizontal, 14)
                             }
 
                         VStack(spacing: 12) {
-                            AssistantChoiceButton(title: "購買單花") {
-                                appModel.openBrowse(mode: .materials)
-                            }
-                            AssistantChoiceButton(title: "現成花束") {
-                                appModel.openBrowse(mode: .bouquets)
-                            }
-                            AssistantChoiceButton(title: "定製花束") {
+                            AssistantChoiceButton(title: "開始推薦") {
                                 appModel.openCustomBouquetFlow(from: .assistant)
                             }
                         }
@@ -996,13 +1031,16 @@ private struct AssistantIntroScreen: View {
 
 private struct AssistantJourneyScreen: View {
     @ObservedObject var appModel: FigmaCustomerAppModel
-    @StateObject private var previewViewModel = AIBouquetPreviewViewModel()
     @State private var visibleStep = 0
     @State private var pendingStep: Int?
+    @State private var customRecipientText = ""
+    @State private var customOccasionText = ""
+    @State private var customColorText = ""
 
-    private let occasionOptions = ["生日", "紀念日/節日", "表白/驚喜", "畢業 / 升學", "探病 / 慰問", "離職 / 送別", "其他，請輸入"]
-    private let paletteOptions = ["粉色", "奶油白", "紅色", "白綠"]
-    private let moodOptions = ["浪漫", "溫柔", "清新", "高級感"]
+    private let purchaseTypeOptions = ["單枝花", "花束", "自訂"]
+    private let recipientOptions = ["伴侶", "朋友", "家人", "同事"]
+    private let occasionOptions = ["生日", "紀念日", "畢業", "感謝"]
+    private let colorOptions = ["粉色", "白綠", "紅色", "暖黃色"]
     private let budgetOptions = ["小於港幣100元", "港幣100-200元", "港幣200-300元", "港幣300元以上"]
 
     var body: some View {
@@ -1038,18 +1076,18 @@ private struct AssistantJourneyScreen: View {
                         .padding(.horizontal, 51)
 
                         AssistantConversationBlock(
-                            title: "你好！我是你的 AI 花藝助手。請問您今天需要的送花場合是？",
+                            title: "你好！我是你的 AI 花藝助手。我會用結構化方式幫你推薦。請先選擇購買類型。",
                             iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                         ) {
                             if visibleStep >= 1 {
                                 OptionGrid(
-                                    options: occasionOptions,
+                                    options: purchaseTypeOptions,
                                     selection: Binding(
-                                        get: { appModel.selectedOccasion },
-                                        set: { appModel.selectedOccasion = $0 }
+                                        get: { appModel.selectedPurchaseType },
+                                        set: { appModel.selectedPurchaseType = $0 }
                                     )
                                 ) { option in
-                                    chooseOccasion(option)
+                                    choosePurchaseType(option)
                                 }
                             }
                         }
@@ -1059,20 +1097,30 @@ private struct AssistantJourneyScreen: View {
                         }
 
                         if visibleStep >= 2 {
-                            AssistantReplyBubble(text: "送花場合是 \(appModel.selectedOccasion)。")
+                            AssistantReplyBubble(text: "想找 \(appModel.selectedPurchaseType)。")
 
                             AssistantConversationBlock(
-                                title: "收到。希望花束的主色調偏向哪一種？",
+                                title: "收花對象是誰？你可以點選常見選項，也可以直接輸入。",
                                 iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                             ) {
-                                OptionGrid(
-                                    options: paletteOptions,
-                                    selection: Binding(
-                                        get: { appModel.selectedPalette },
-                                        set: { appModel.selectedPalette = $0 }
+                                VStack(spacing: 12) {
+                                    OptionGrid(
+                                        options: recipientOptions,
+                                        selection: Binding(
+                                            get: { appModel.selectedRecipient },
+                                            set: { appModel.selectedRecipient = $0 }
+                                        )
+                                    ) { option in
+                                        chooseRecipient(option)
+                                    }
+
+                                    freeTextInput(
+                                        text: $customRecipientText,
+                                        placeholder: "或輸入其他收花對象",
+                                        buttonTitle: "確認收花對象",
+                                        isEnabled: canConfirmCustomRecipient,
+                                        action: confirmCustomRecipient
                                     )
-                                ) { option in
-                                    choosePalette(option)
                                 }
                             }
                         }
@@ -1082,20 +1130,30 @@ private struct AssistantJourneyScreen: View {
                         }
 
                         if visibleStep >= 3 {
-                            AssistantReplyBubble(text: "主色調想走 \(appModel.selectedPalette)。")
+                            AssistantReplyBubble(text: "收花對象是 \(appModel.selectedRecipient)。")
 
                             AssistantConversationBlock(
-                                title: "了解了。想讓這束花呈現什麼風格？",
+                                title: "這次送花場合是什麼？你可以點選，也可以自行輸入。",
                                 iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                             ) {
-                                OptionGrid(
-                                    options: moodOptions,
-                                    selection: Binding(
-                                        get: { appModel.selectedMood },
-                                        set: { appModel.selectedMood = $0 }
+                                VStack(spacing: 12) {
+                                    OptionGrid(
+                                        options: occasionOptions,
+                                        selection: Binding(
+                                            get: { appModel.selectedOccasion },
+                                            set: { appModel.selectedOccasion = $0 }
+                                        )
+                                    ) { option in
+                                        chooseOccasion(option)
+                                    }
+
+                                    freeTextInput(
+                                        text: $customOccasionText,
+                                        placeholder: "或輸入其他送花場合",
+                                        buttonTitle: "確認送花場合",
+                                        isEnabled: canConfirmCustomOccasion,
+                                        action: confirmCustomOccasion
                                     )
-                                ) { option in
-                                    chooseMood(option)
                                 }
                             }
                         }
@@ -1105,10 +1163,43 @@ private struct AssistantJourneyScreen: View {
                         }
 
                         if visibleStep >= 4 {
-                            AssistantReplyBubble(text: "整體風格想要 \(appModel.selectedMood)。")
+                            AssistantReplyBubble(text: "送花場合是 \(appModel.selectedOccasion)。")
 
                             AssistantConversationBlock(
-                                title: "請問您的預算是？",
+                                title: "想偏向什麼顏色？你可以點選，也可以自行輸入。",
+                                iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                            ) {
+                                VStack(spacing: 12) {
+                                    OptionGrid(
+                                        options: colorOptions,
+                                        selection: Binding(
+                                            get: { appModel.selectedColor },
+                                            set: { appModel.selectedColor = $0 }
+                                        )
+                                    ) { option in
+                                        chooseColor(option)
+                                    }
+
+                                    freeTextInput(
+                                        text: $customColorText,
+                                        placeholder: "或輸入其他顏色偏好",
+                                        buttonTitle: "確認顏色偏好",
+                                        isEnabled: canConfirmCustomColor,
+                                        action: confirmCustomColor
+                                    )
+                                }
+                            }
+                        }
+
+                        if pendingStep == 5 {
+                            TypingIndicatorBubble()
+                        }
+
+                        if visibleStep >= 5 {
+                            AssistantReplyBubble(text: "顏色偏好是 \(appModel.selectedColor)。")
+
+                            AssistantConversationBlock(
+                                title: "最後一題，請選擇預算範圍。",
                                 iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                             ) {
                                 OptionGrid(
@@ -1123,33 +1214,18 @@ private struct AssistantJourneyScreen: View {
                             }
                         }
 
-                        if pendingStep == 5 {
+                        if pendingStep == 6 {
                             TypingIndicatorBubble(text: "我正在整理最適合你的花束方向...")
                         }
 
-                        if visibleStep >= 5 {
-                            AssistantReplyBubble(text: "預算設定為 \(appModel.selectedBudget)。請查看我為你整理的花束方案。")
-
-                            AssistantSummaryBubble(
-                                title: "定製建議",
-                                summaryText: "根據你選擇的 \(appModel.selectedOccasion)、\(appModel.selectedPalette) 主色與 \(appModel.selectedMood) 氣質，我先整理了花材方向，再交由 AI 生成真實預覽。"
-                            )
-                            .padding(.horizontal, 24)
-
-                            AIResultPanel(
-                                requirement: composedRequirement,
-                                previewViewModel: previewViewModel,
-                                onGenerate: {
-                                    Task {
-                                        await previewViewModel.generatePreview()
-                                    }
-                                },
-                                onUsePreview: {
-                                    if let generatedProduct = generatedPreviewProduct {
-                                        appModel.selectedProduct = generatedProduct
-                                        appModel.addSelectedProductToCart()
-                                        appModel.selectTab(.cart)
-                                    }
+                        if visibleStep >= 6 {
+                            AssistantRecommendationBubble(
+                                suggestedDesign: suggestedDesignText,
+                                recommendedFlowers: recommendedFlowerTypes,
+                                estimatedPrice: estimatedPriceText,
+                                browseLinkTitle: browseLinkTitle,
+                                onOpenBrowse: {
+                                    appModel.openBrowse(mode: browseMode)
                                 }
                             )
                             .padding(.horizontal, 24)
@@ -1170,6 +1246,7 @@ private struct AssistantJourneyScreen: View {
                     scrollToBottom(proxy)
                 }
                 .task {
+                    syncCustomInputsFromSelection()
                     if visibleStep == 0 {
                         withAnimation(.easeInOut(duration: 0.25)) {
                             visibleStep = 1
@@ -1180,58 +1257,188 @@ private struct AssistantJourneyScreen: View {
         }
     }
 
-    private var composedRequirement: String {
-        "為\(appModel.selectedOccasion)準備一束 \(appModel.selectedPalette) 主色、\(appModel.selectedMood) 風格的花束，預算 \(appModel.selectedBudget)，希望畫面寫實、自然、精緻。"
+    private var canConfirmCustomRecipient: Bool {
+        !customRecipientText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var generatedPreviewProduct: BouquetProduct? {
-        guard let preview = previewViewModel.generatedPreview else { return nil }
-        return BouquetProduct(
-            id: "ai-preview-\(preview.imageURL.absoluteString)",
-            name: "AI 定製花束",
-            tagline: "\(appModel.selectedPalette) · \(appModel.selectedMood)",
-            descriptionLines: [appModel.selectedOccasion, appModel.selectedBudget],
-            longDescription: [composedRequirement],
-            priceText: estimatedPriceText,
-            imageURL: preview.imageURL.absoluteString,
-            accent: FigmaPalette.softPink
-        )
+    private var canConfirmCustomOccasion: Bool {
+        !customOccasionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var estimatedPriceText: String {
-        switch appModel.selectedBudget {
-        case "小於港幣100元":
-            return "HKD 98"
-        case "港幣100-200元":
-            return "HKD 180"
-        case "港幣200-300元":
-            return "HKD 260"
+    private var canConfirmCustomColor: Bool {
+        !customColorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var suggestedDesignText: String {
+        switch appModel.selectedPurchaseType {
+        case "單枝花":
+            return "以 \(appModel.selectedColor) 為主調的單枝花禮，適合送給 \(appModel.selectedRecipient) 作為 \(appModel.selectedOccasion) 心意。"
+        case "自訂":
+            return "為 \(appModel.selectedRecipient) 客製一款 \(appModel.selectedColor) 主調的 \(appModel.selectedOccasion) 花禮，層次感會更突出。"
         default:
-            return "HKD 360"
+            return "推薦一束送給 \(appModel.selectedRecipient) 的 \(appModel.selectedColor) \(appModel.selectedOccasion) 花束，整體包裝走精緻柔和路線。"
         }
     }
 
-    private func chooseOccasion(_ option: String) {
-        appModel.selectedOccasion = option
+    private var recommendedFlowerTypes: [String] {
+        let recipient = appModel.selectedRecipient
+        let occasion = appModel.selectedOccasion
+        let color = appModel.selectedColor
+
+        if occasion.contains("畢業") {
+            if color.contains("黃") {
+                return ["向日葵", "白滿天星", "尤加利葉"]
+            }
+            if color.contains("粉") {
+                return ["向日葵", "粉郁金香", "粉滿天星"]
+            }
+            return ["向日葵", "白滿天星", "尤加利葉"]
+        }
+
+        if occasion.contains("紀念") || recipient.contains("伴侶") {
+            if color.contains("紅") {
+                return ["紅玫瑰", "紅郁金香", "白滿天星"]
+            }
+            if color.contains("白") || color.contains("綠") {
+                return ["白玫瑰", "白百合", "尤加利葉"]
+            }
+            return ["粉玫瑰", "粉郁金香", "粉滿天星"]
+        }
+
+        if recipient.contains("家人") || occasion.contains("感謝") {
+            if color.contains("白") || color.contains("綠") {
+                return ["白百合", "白滿天星", "尤加利葉"]
+            }
+            return ["粉康乃馨", "粉百合", "尤加利葉"]
+        }
+
+        if color.contains("藍") {
+            return ["藍繡球", "白滿天星", "尤加利葉"]
+        }
+        if color.contains("紅") {
+            return ["紅玫瑰", "白百合", "尤加利葉"]
+        }
+        if color.contains("白") || color.contains("綠") {
+            return ["白玫瑰", "白百合", "尤加利葉"]
+        }
+        if color.contains("黃") {
+            return ["向日葵", "香檳玫瑰", "尤加利葉"]
+        }
+
+        return ["粉玫瑰", "粉百合", "粉滿天星"]
+    }
+
+    private var estimatedPriceText: String {
+        switch (appModel.selectedPurchaseType, appModel.selectedBudget) {
+        case ("單枝花", "小於港幣100元"):
+            return "約 HKD 68-98"
+        case ("單枝花", "港幣100-200元"):
+            return "約 HKD 128-168"
+        case ("單枝花", "港幣200-300元"):
+            return "約 HKD 188-228"
+        case ("單枝花", _):
+            return "約 HKD 320+"
+        case ("自訂", "小於港幣100元"):
+            return "約 HKD 108"
+        case ("自訂", "港幣100-200元"):
+            return "約 HKD 188-218"
+        case ("自訂", "港幣200-300元"):
+            return "約 HKD 268-298"
+        case ("自訂", _):
+            return "約 HKD 398+"
+        case (_, "小於港幣100元"):
+            return "約 HKD 98"
+        case (_, "港幣100-200元"):
+            return "約 HKD 168-198"
+        case (_, "港幣200-300元"):
+            return "約 HKD 238-288"
+        default:
+            return "約 HKD 368+"
+        }
+    }
+
+    private var browseMode: FigmaCustomerAppModel.BrowseMode {
+        appModel.selectedPurchaseType == "單枝花" ? .materials : .bouquets
+    }
+
+    private var browseLinkTitle: String {
+        appModel.selectedPurchaseType == "單枝花" ? "前往商品瀏覽頁查看單花" : "前往商品瀏覽頁查看花束"
+    }
+
+    @ViewBuilder
+    private func freeTextInput(
+        text: Binding<String>,
+        placeholder: String,
+        buttonTitle: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 10) {
+            SoftInputField(text: text, placeholder: placeholder)
+                .onSubmit {
+                    action()
+                }
+
+            SoftActionButton(title: buttonTitle, isEnabled: isEnabled) {
+                action()
+            }
+            .frame(maxWidth: 160)
+        }
+    }
+
+    private func syncCustomInputsFromSelection() {
+        customRecipientText = recipientOptions.contains(appModel.selectedRecipient) ? "" : appModel.selectedRecipient
+        customOccasionText = occasionOptions.contains(appModel.selectedOccasion) ? "" : appModel.selectedOccasion
+        customColorText = colorOptions.contains(appModel.selectedColor) ? "" : appModel.selectedColor
+    }
+
+    private func choosePurchaseType(_ option: String) {
+        appModel.selectedPurchaseType = option
         reveal(step: 2)
     }
 
-    private func choosePalette(_ option: String) {
-        appModel.selectedPalette = option
+    private func chooseRecipient(_ option: String) {
+        customRecipientText = ""
+        appModel.selectedRecipient = option
         reveal(step: 3)
     }
 
-    private func chooseMood(_ option: String) {
-        appModel.selectedMood = option
+    private func confirmCustomRecipient() {
+        let trimmedRecipient = customRecipientText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRecipient.isEmpty else { return }
+        appModel.selectedRecipient = trimmedRecipient
+        reveal(step: 3)
+    }
+
+    private func chooseOccasion(_ option: String) {
+        customOccasionText = ""
+        appModel.selectedOccasion = option
         reveal(step: 4)
+    }
+
+    private func confirmCustomOccasion() {
+        let trimmedOccasion = customOccasionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOccasion.isEmpty else { return }
+        appModel.selectedOccasion = trimmedOccasion
+        reveal(step: 4)
+    }
+
+    private func chooseColor(_ option: String) {
+        customColorText = ""
+        appModel.selectedColor = option
+        reveal(step: 5)
+    }
+
+    private func confirmCustomColor() {
+        let trimmedColor = customColorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedColor.isEmpty else { return }
+        appModel.selectedColor = trimmedColor
+        reveal(step: 5)
     }
 
     private func chooseBudget(_ option: String) {
         appModel.selectedBudget = option
-        previewViewModel.requirement = composedRequirement
-        previewViewModel.search(flowers: Flower.sampleFlowers)
-        previewViewModel.resetOutput()
-        reveal(step: 5)
+        reveal(step: 6)
     }
 
     private func reveal(step: Int) {
@@ -1282,7 +1489,15 @@ private struct CartScreen: View {
                     } else {
                         VStack(spacing: 16) {
                             ForEach(appModel.cartItems) { item in
-                                CartItemCard(item: item)
+                                CartItemCard(
+                                    item: item,
+                                    onIncrement: {
+                                        appModel.addProductToCart(item.product)
+                                    },
+                                    onDecrement: {
+                                        appModel.removeProductFromCart(item.product)
+                                    }
+                                )
                             }
 
                             VStack(spacing: 10) {
@@ -2050,6 +2265,55 @@ private struct AssistantSummaryBubble: View {
     }
 }
 
+private struct AssistantRecommendationBubble: View {
+    let suggestedDesign: String
+    let recommendedFlowers: [String]
+    let estimatedPrice: String
+    let browseLinkTitle: String
+    let onOpenBrowse: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("推薦結果")
+                .font(.system(size: 15, weight: .bold))
+
+            recommendationLine(title: "Suggested bouquet design", value: suggestedDesign)
+            recommendationLine(title: "Recommended flower types", value: recommendedFlowers.joined(separator: "、"))
+            recommendationLine(title: "Estimated price", value: estimatedPrice)
+
+            Button(action: onOpenBrowse) {
+                HStack(spacing: 6) {
+                    Text(browseLinkTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .underline()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(Color(red: 0.07, green: 0.30, blue: 0.26))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+        )
+    }
+
+    private func recommendationLine(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+            Text(value)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundColor(.black.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 private struct AIResultPanel: View {
     let requirement: String
     @ObservedObject var previewViewModel: AIBouquetPreviewViewModel
@@ -2271,43 +2535,58 @@ private struct FlowerSidebarButton: View {
 
 private struct FlowerCatalogCard: View {
     let flower: Flower
-    let action: () -> Void
+    let quantity: Int
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             ZStack {
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 64, height: 64)
+                    .frame(width: 72, height: 72)
                     .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
 
                 Text(flower.emoji)
-                    .font(.system(size: 30))
+                    .font(.system(size: 32))
             }
+            .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(flower.name)
-                    .font(.system(size: 18, weight: .bold))
-                Text(flower.englishName)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(.secondary)
-                Text("HKD \(Int(flower.price.rounded())) / \(flower.unitDisplayName)")
-                    .font(.system(size: 15, weight: .bold))
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(flower.name)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.black)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(flower.englishName)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                HStack(alignment: .bottom, spacing: 10) {
+                    Text("$\(Int(flower.price.rounded())) / \(flower.unitDisplayName)")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.black)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+
+                    Spacer(minLength: 8)
+
+                    QuantityControl(
+                        quantity: quantity,
+                        onIncrement: onIncrement,
+                        onDecrement: onDecrement,
+                        collapsedWhenZero: true
+                    )
+                }
             }
-
-            Spacer()
-
-            Button(action: action) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.black)
-                    .frame(width: 82, height: 42)
-                    .overlay {
-                        Text("加入")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-            }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 18)
@@ -2348,6 +2627,8 @@ private struct EmptyCartCard: View {
 
 private struct CartItemCard: View {
     let item: CartItem
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
 
     var body: some View {
         HStack(spacing: 16) {
@@ -2374,9 +2655,12 @@ private struct CartItemCard: View {
                 Text(item.product.priceText)
                     .font(.system(size: 17, weight: .bold))
 
-                Text("數量 x\(item.quantity)")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundColor(.secondary)
+                QuantityControl(
+                    quantity: item.quantity,
+                    onIncrement: onIncrement,
+                    onDecrement: onDecrement,
+                    style: .compact
+                )
             }
 
             Spacer()
@@ -2390,6 +2674,70 @@ private struct CartItemCard: View {
                         .stroke(FigmaPalette.softPink, lineWidth: 1)
                 )
         )
+    }
+}
+
+private struct QuantityControl: View {
+    enum Style {
+        case regular
+        case compact
+    }
+
+    let quantity: Int
+    let onIncrement: () -> Void
+    let onDecrement: () -> Void
+    var style: Style = .regular
+    var collapsedWhenZero = false
+
+    var body: some View {
+        Group {
+            if collapsedWhenZero && quantity == 0 {
+                Button(action: onIncrement) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.black)
+                            .frame(width: 30, height: 30)
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: style == .regular ? 6 : 6) {
+                    quantityButton(symbol: "minus", action: onDecrement, isEnabled: quantity > 0)
+
+                    Text("\(quantity)")
+                        .font(.system(size: style == .regular ? 13 : 12, weight: .bold))
+                        .foregroundColor(.black)
+                        .frame(minWidth: style == .regular ? 16 : 14)
+
+                    quantityButton(symbol: "plus", action: onIncrement, isEnabled: true)
+                }
+                .padding(.horizontal, style == .regular ? 8 : 7)
+                .frame(height: style == .regular ? 30 : 28)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(FigmaPalette.softPink.opacity(0.4))
+                )
+            }
+        }
+    }
+
+    private func quantityButton(symbol: String, action: @escaping () -> Void, isEnabled: Bool) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(style == .regular ? Color.white.opacity(0.96) : Color.white)
+                    .frame(width: style == .regular ? 18 : 16, height: style == .regular ? 18 : 16)
+                Image(systemName: symbol)
+                    .font(.system(size: style == .regular ? 8 : 7, weight: .bold))
+                    .foregroundColor(.black)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
