@@ -176,6 +176,7 @@ struct OrderData: Codable, Identifiable {
     @DocumentID var id: String?
     let bouquetId: String
     let bouquetData: BouquetData
+    let sourceOrderId: String?
     let customerName: String
     let customerPhone: String
     let deliveryAddress: String

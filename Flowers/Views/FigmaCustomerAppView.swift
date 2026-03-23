@@ -82,6 +82,8 @@ final class FigmaCustomerAppModel: ObservableObject {
         case productDetail
         case assistantJourney
         case farm
+        case checkout
+        case orderTracking
     }
 
     enum AssistantFlowStage: Equatable {
@@ -120,11 +122,17 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var showPreviewDisclaimer = false
     @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
     @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-5-0-250428"
+    @Published var selectedPaymentMethod: CheckoutPaymentMethod = .alipayHK
+    @Published var isShowingCheckoutPriceDetails = false
+    @Published var isSubmittingPayment = false
+    @Published var paymentErrorMessage: String?
+    @Published var submittedTrackingOrder: StorefrontTrackingOrder?
 
     private let flowerService = FlowerService()
     private let bouquetService = BouquetService()
     private let previewService = AIBouquetPreviewService()
     private let storefrontConfigService = StorefrontConfigService()
+    private let orderService = OrderService()
     private var cancellables = Set<AnyCancellable>()
     private var liveBouquetCatalog: [BouquetData] = []
     private var hasResolvedRemoteFlowers = false
@@ -163,6 +171,16 @@ final class FigmaCustomerAppModel: ObservableObject {
         let flowers = availableFlowers
         guard let selectedFlowerCategory else { return flowers }
         return flowers.filter { $0.category == selectedFlowerCategory }
+    }
+
+    var cartTotalPrice: Double {
+        cartItems.reduce(0) { partial, item in
+            partial + unitPrice(for: item.product) * Double(item.quantity)
+        }
+    }
+
+    var cartTotalPriceText: String {
+        "HKD \(Int(cartTotalPrice.rounded()))"
     }
 
     var diyFlowerCategories: [FlowerCategory] {
@@ -363,6 +381,80 @@ final class FigmaCustomerAppModel: ObservableObject {
         missingPreviewReferenceMessages.isEmpty
     }
 
+    var checkoutPrimaryItem: CartItem? {
+        cartItems.first
+    }
+
+    var checkoutProductTitle: String {
+        guard let primary = checkoutPrimaryItem else {
+            return "花禮訂單"
+        }
+
+        if cartItems.count == 1 {
+            return primary.product.name
+        }
+
+        return "\(primary.product.name) 等\(cartItems.count)件花禮"
+    }
+
+    var checkoutProductSubtitle: String {
+        if cartItems.count == 1 {
+            return checkoutPrimaryItem?.product.tagline ?? "店舖花禮"
+        }
+
+        let totalQuantity = cartItems.reduce(0) { $0 + $1.quantity }
+        return "共 \(totalQuantity) 件商品"
+    }
+
+    var checkoutProductImageURL: String {
+        checkoutPrimaryItem?.product.imageURL ?? ""
+    }
+
+    var checkoutPickupLocation: String {
+        "蔚蘭園 – 香港大學站 B2 出口"
+    }
+
+    var checkoutPickupTimeText: String {
+        timeText(from: checkoutPickupDate)
+    }
+
+    var checkoutPickupWindowText: String {
+        let start = checkoutPickupDate.addingTimeInterval(90 * 60)
+        let end = start.addingTimeInterval(30 * 60)
+        return "\(timeText(from: start)) - \(timeText(from: end))"
+    }
+
+    var checkoutSpecialRequests: String {
+        let trimmedCardMessage = cardMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeGreetingCard, !trimmedCardMessage.isEmpty {
+            return trimmedCardMessage
+        }
+
+        return "請準備新鮮花材，謝謝 🌹"
+    }
+
+    var checkoutBreakdownLines: [CheckoutBreakdownLine] {
+        let itemLines = cartItems.map { item in
+            CheckoutBreakdownLine(
+                title: item.product.name,
+                detail: "\(item.quantity) × \(currencyText(unitPrice(for: item.product)))",
+                amount: unitPrice(for: item.product) * Double(item.quantity)
+            )
+        }
+
+        if itemLines.isEmpty {
+            return [
+                CheckoutBreakdownLine(
+                    title: "店舖花禮",
+                    detail: "1 × HKD 0",
+                    amount: 0
+                )
+            ]
+        }
+
+        return itemLines
+    }
+
     func showEmailLogin() {
         authState = .emailLogin
     }
@@ -449,10 +541,27 @@ final class FigmaCustomerAppModel: ObservableObject {
         addProductToCart(selectedProduct)
     }
 
-    func proceedToCart() {
+    func proceedToCheckout() {
         addSelectedProductToCart()
+        openCheckout()
+    }
+
+    func proceedToCart() {
         activeTab = .cart
         overlayScreen = nil
+    }
+
+    func openCheckout() {
+        guard !cartItems.isEmpty else {
+            activeTab = .cart
+            overlayScreen = nil
+            return
+        }
+
+        activeTab = .cart
+        overlayScreen = .checkout
+        isShowingCheckoutPriceDetails = false
+        paymentErrorMessage = nil
     }
 
     func browseFeaturedProduct() {
@@ -608,10 +717,97 @@ final class FigmaCustomerAppModel: ObservableObject {
         addProductToCart(product)
     }
 
-    func addCustomBouquetToCartAndOpenCart() {
+    func addCustomBouquetToCartAndProceedToCheckout() {
         addCustomBouquetToCart()
-        activeTab = .cart
+        openCheckout()
+    }
+
+    func toggleCheckoutPriceDetails() {
+        isShowingCheckoutPriceDetails.toggle()
+    }
+
+    func selectPaymentMethod(_ method: CheckoutPaymentMethod) {
+        selectedPaymentMethod = method
+    }
+
+    func dismissCheckout() {
         overlayScreen = nil
+        activeTab = .cart
+    }
+
+    func dismissTracking() {
+        overlayScreen = nil
+        activeTab = .home
+    }
+
+    func submitDemoPayment() {
+        guard !cartItems.isEmpty, !isSubmittingPayment else { return }
+
+        isSubmittingPayment = true
+        paymentErrorMessage = nil
+
+        let cartSnapshot = cartItems
+        let sourceOrderId = generateSourceOrderId()
+        let orderName = checkoutProductTitle
+        let pickupDate = checkoutPickupDate
+        let orderItems = cartSnapshot.map { item in
+            StorefrontOrderLineItem(
+                productId: item.product.id,
+                productName: item.product.name,
+                unitPrice: unitPrice(for: item.product),
+                quantity: item.quantity
+            )
+        }
+
+        orderService.submitStorefrontOrder(
+            items: orderItems,
+            orderName: orderName,
+            customerName: demoCustomerName,
+            customerPhone: demoCustomerPhone,
+            deliveryAddress: checkoutPickupLocation,
+            deliveryDate: pickupDate,
+            specialRequests: checkoutSpecialRequests,
+            totalPrice: cartSnapshot.reduce(0) { partial, item in
+                partial + unitPrice(for: item.product) * Double(item.quantity)
+            },
+            sourceOrderId: sourceOrderId
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isSubmittingPayment = false
+
+                switch result {
+                case .success(let submittedOrder):
+                    self.submittedTrackingOrder = StorefrontTrackingOrder(
+                        documentID: submittedOrder.documentID,
+                        sourceOrderId: submittedOrder.sourceOrderId,
+                        createdAt: submittedOrder.createdAt,
+                        pickupDate: pickupDate,
+                        pickupLocation: self.checkoutPickupLocation,
+                        pickupWindowText: self.checkoutPickupWindowText,
+                        note: self.checkoutSpecialRequests,
+                        paymentMethod: self.selectedPaymentMethod,
+                        items: cartSnapshot.map { item in
+                            StorefrontTrackingOrder.ItemSnapshot(
+                                name: item.product.name,
+                                quantity: item.quantity,
+                                unitPrice: self.unitPrice(for: item.product),
+                                imageURL: item.product.imageURL
+                            )
+                        },
+                        totalPrice: cartSnapshot.reduce(0) { partial, item in
+                            partial + self.unitPrice(for: item.product) * Double(item.quantity)
+                        }
+                    )
+                    self.cartItems = []
+                    self.isShowingCheckoutPriceDetails = false
+                    self.overlayScreen = .orderTracking
+                    self.activeTab = .cart
+                case .failure(let error):
+                    self.paymentErrorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func setupFlowerBindings() {
@@ -740,6 +936,59 @@ final class FigmaCustomerAppModel: ObservableObject {
            !resolvedCatalog.contains(where: { $0.id == selectedProduct.id }) {
             selectedProduct = resolvedCatalog.dropFirst().first ?? firstProduct
         }
+    }
+
+    private var checkoutPickupDate: Date {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date()
+        let todayThreePM = calendar.date(
+            bySettingHour: 15,
+            minute: 0,
+            second: 0,
+            of: now
+        ) ?? now
+
+        if now < todayThreePM {
+            return todayThreePM
+        }
+
+        return calendar.date(byAdding: .day, value: 1, to: todayThreePM) ?? todayThreePM
+    }
+
+    private var demoCustomerName: String {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty else {
+            return "Demo Customer"
+        }
+
+        return trimmedEmail.components(separatedBy: "@").first ?? trimmedEmail
+    }
+
+    private var demoCustomerPhone: String {
+        "+852 0000 0000"
+    }
+
+    private func generateSourceOrderId() -> String {
+        let rawValue = Int(Date().timeIntervalSince1970) % 10_000
+        return String(format: "#%04d", rawValue)
+    }
+
+    private func unitPrice(for product: BouquetProduct) -> Double {
+        let digits = product.priceText
+            .replacingOccurrences(of: "HKD", with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(digits) ?? 0
+    }
+
+    private func currencyText(_ amount: Double) -> String {
+        "HKD \(Int(amount.rounded()))"
+    }
+
+    private func timeText(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 }
 
@@ -963,6 +1212,71 @@ struct CartItem: Identifiable {
     var quantity: Int
 }
 
+enum CheckoutPaymentMethod: String, CaseIterable, Identifiable {
+    case alipayHK = "支付寶香港"
+    case applePay = "Apple Pay"
+    case octopus = "八達通"
+    case wechatPay = "微信支付"
+    case more = "更多付款方式"
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .alipayHK, .octopus, .wechatPay:
+            return "camera.macro"
+        case .applePay:
+            return "apple.logo"
+        case .more:
+            return "ellipsis.circle"
+        }
+    }
+}
+
+struct CheckoutBreakdownLine: Identifiable {
+    let id = UUID()
+    let title: String
+    let detail: String
+    let amount: Double
+}
+
+struct StorefrontTrackingOrder {
+    struct ItemSnapshot: Identifiable {
+        let id = UUID()
+        let name: String
+        let quantity: Int
+        let unitPrice: Double
+        let imageURL: String
+    }
+
+    let documentID: String
+    let sourceOrderId: String
+    let createdAt: Date
+    let pickupDate: Date
+    let pickupLocation: String
+    let pickupWindowText: String
+    let note: String
+    let paymentMethod: CheckoutPaymentMethod
+    let items: [ItemSnapshot]
+    let totalPrice: Double
+
+    var primaryItem: ItemSnapshot? {
+        items.first
+    }
+
+    var title: String {
+        guard let primaryItem else {
+            return "花禮訂單"
+        }
+
+        if items.count == 1 {
+            return primaryItem.name
+        }
+
+        return "\(primaryItem.name) 等\(items.count)件花禮"
+    }
+}
+
 private struct MainFlowScreen: View {
     @ObservedObject var appModel: FigmaCustomerAppModel
 
@@ -975,6 +1289,10 @@ private struct MainFlowScreen: View {
                 AssistantJourneyScreen(appModel: appModel)
             case .farm:
                 FarmScreen(appModel: appModel)
+            case .checkout:
+                CheckoutScreen(appModel: appModel)
+            case .orderTracking:
+                OrderTrackingScreen(appModel: appModel)
             case nil:
                 switch appModel.activeTab {
                 case .home:
@@ -1560,7 +1878,7 @@ private struct ProductDetailScreen: View {
                         }
 
                         SmallCapsuleButton(title: "前往付款", filled: false) {
-                            appModel.proceedToCart()
+                            appModel.proceedToCheckout()
                         }
                     }
                     .padding(.top, 14)
@@ -2051,7 +2369,9 @@ private struct CartScreen: View {
                                         .font(.system(size: 22, weight: .bold))
                                 }
 
-                                SoftActionButton(title: "前往付款", isEnabled: true) {}
+                                SoftActionButton(title: "前往付款", isEnabled: true) {
+                                    appModel.openCheckout()
+                                }
                             }
                             .padding(20)
                             .background(
@@ -2079,6 +2399,510 @@ private struct CartScreen: View {
     private func numericPrice(from priceText: String) -> Int {
         Int(priceText.replacingOccurrences(of: "HKD ", with: "")) ?? 0
     }
+}
+
+private struct CheckoutScreen: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        MainScreenContainer(selectedTab: .cart, appModel: appModel) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    FigmaHeader(
+                        brand: "蔚蘭園",
+                        title: "結賬頁面",
+                        subtitle: nil,
+                        showBack: true,
+                        showBell: true,
+                        onBack: appModel.dismissCheckout
+                    )
+                    .padding(.top, 18)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "hand.raised")
+                            .font(.system(size: 17, weight: .regular))
+                        VStack(spacing: 0) {
+                            Text("到店自取")
+                                .font(.system(size: 18, weight: .bold))
+                            Text("暫不支持配送")
+                                .font(.system(size: 9, weight: .regular))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    CheckoutSummaryCard(appModel: appModel)
+
+                    Button(action: appModel.toggleCheckoutPriceDetails) {
+                        Text(appModel.isShowingCheckoutPriceDetails ? "點擊收起價格明細" : "點擊展開價格明細")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, -8)
+
+                    if appModel.isShowingCheckoutPriceDetails {
+                        CheckoutPriceBreakdownCard(appModel: appModel)
+                    } else {
+                        VStack(alignment: .leading, spacing: 18) {
+                            CheckoutInfoSection(
+                                title: "地點：",
+                                value: appModel.checkoutPickupLocation
+                            )
+
+                            CheckoutInfoSection(
+                                title: "預計取貨時間",
+                                value: appModel.checkoutPickupTimeText
+                            )
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("備註：")
+                                    .font(.system(size: 12, weight: .bold))
+
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Color.black, lineWidth: 1)
+                                    .frame(height: 62)
+                                    .overlay(alignment: .leading) {
+                                        Text(appModel.checkoutSpecialRequests)
+                                            .font(.system(size: 15, weight: .bold))
+                                            .foregroundColor(.black)
+                                            .padding(.horizontal, 16)
+                                            .lineLimit(2)
+                                    }
+                            }
+
+                            Text(appModel.checkoutPickupWindowText)
+                                .font(.system(size: 15, weight: .regular))
+
+                            CheckoutPaymentMethodCard(appModel: appModel)
+
+                            SoftActionButton(
+                                title: appModel.isSubmittingPayment
+                                    ? "模擬付款中..."
+                                    : "模擬付款（\(appModel.selectedPaymentMethod.rawValue)）",
+                                isEnabled: !appModel.isSubmittingPayment
+                            ) {
+                                appModel.submitDemoPayment()
+                            }
+
+                            Text("演示用假支付，不會真的扣款；付款成功後會把訂單寫入 Firebase。")
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundColor(.secondary)
+
+                            if let paymentErrorMessage = appModel.paymentErrorMessage {
+                                Text(paymentErrorMessage)
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 32)
+                .padding(.bottom, 26)
+                .frame(maxWidth: 402)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+}
+
+private struct CheckoutSummaryCard: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 34, style: .continuous)
+            .fill(FigmaPalette.softPink)
+            .overlay {
+                HStack(spacing: 14) {
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: 118, height: 106)
+                        .overlay {
+                            RemoteAssetImage(
+                                urlString: appModel.checkoutProductImageURL,
+                                fallbackSystemName: "gift.fill",
+                                contentMode: .fit
+                            )
+                            .padding(14)
+                        }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(appModel.checkoutProductTitle)
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.black)
+
+                        Text(appModel.checkoutProductSubtitle)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(.secondary)
+
+                        HStack(alignment: .bottom) {
+                            if let primaryItem = appModel.checkoutPrimaryItem,
+                               appModel.cartItems.count == 1 {
+                                QuantityControl(
+                                    quantity: primaryItem.quantity,
+                                    onIncrement: {
+                                        appModel.addProductToCart(primaryItem.product)
+                                    },
+                                    onDecrement: {
+                                        appModel.removeProductFromCart(primaryItem.product)
+                                    },
+                                    style: .compact
+                                )
+                            } else {
+                                Text("共 \(appModel.cartItems.reduce(0) { $0 + $1.quantity }) 件")
+                                    .font(.system(size: 12, weight: .bold))
+                            }
+
+                            Spacer()
+
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(appModel.cartTotalPriceText)
+                                    .font(.system(size: 18, weight: .bold))
+                                Text("點擊展開價格明細")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 15)
+                .padding(.vertical, 14)
+            }
+            .frame(height: 133)
+    }
+}
+
+private struct CheckoutInfoSection: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+
+            Text(value)
+                .font(.system(size: 15, weight: .bold))
+        }
+    }
+}
+
+private struct CheckoutPriceBreakdownCard: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 34, style: .continuous)
+            .fill(Color.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .stroke(FigmaPalette.softPink.opacity(0.75), lineWidth: 1.2)
+            )
+            .shadow(color: FigmaPalette.softPink.opacity(0.55), radius: 14, x: 0, y: 6)
+            .overlay {
+                VStack(spacing: 18) {
+                    Text("價格明細")
+                        .font(.system(size: 20, weight: .bold))
+
+                    ForEach(appModel.checkoutBreakdownLines) { line in
+                        VStack(spacing: 6) {
+                            Text(line.title)
+                                .font(.system(size: 15, weight: .bold))
+                            Text(line.detail)
+                                .font(.system(size: 14, weight: .bold))
+                            Text("= HKD \(Int(line.amount.rounded()))")
+                                .font(.system(size: 16, weight: .bold))
+                        }
+                    }
+
+                    Divider()
+
+                    HStack {
+                        Text("總計")
+                            .font(.system(size: 16, weight: .bold))
+                        Spacer()
+                        Text(appModel.cartTotalPriceText)
+                            .font(.system(size: 18, weight: .bold))
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 26)
+            }
+            .frame(minHeight: 340)
+    }
+}
+
+private struct CheckoutPaymentMethodCard: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 34, style: .continuous)
+            .stroke(FigmaPalette.softPink.opacity(0.75), lineWidth: 1.2)
+            .background(
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .fill(Color.white)
+            )
+            .overlay {
+                VStack(spacing: 0) {
+                    ForEach(Array(CheckoutPaymentMethod.allCases.enumerated()), id: \.offset) { index, method in
+                        CheckoutPaymentMethodRow(
+                            method: method,
+                            isSelected: appModel.selectedPaymentMethod == method
+                        ) {
+                            appModel.selectPaymentMethod(method)
+                        }
+
+                        if index < CheckoutPaymentMethod.allCases.count - 1 {
+                            Divider()
+                                .padding(.leading, 28)
+                                .padding(.trailing, 18)
+                        }
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .frame(minHeight: 236)
+    }
+}
+
+private struct CheckoutPaymentMethodRow: View {
+    let method: CheckoutPaymentMethod
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: method.iconName)
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundColor(FigmaPalette.hotPink)
+                    .frame(width: 24)
+
+                Text(method.rawValue)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.black)
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundColor(.black)
+            }
+            .padding(.horizontal, 26)
+            .frame(height: 50)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct OrderTrackingScreen: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        MainScreenContainer(selectedTab: .cart, appModel: appModel) {
+            if let order = appModel.submittedTrackingOrder {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top) {
+                                Button(action: appModel.dismissTracking) {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundColor(FigmaPalette.palePink)
+                                        .frame(width: 28, height: 28)
+                                }
+                                .buttonStyle(.plain)
+
+                                Spacer()
+
+                                Image(systemName: "bell.fill")
+                                    .font(.system(size: 30, weight: .bold))
+                            }
+
+                            Text("下單成功!!!")
+                                .font(.system(size: 14, weight: .regular))
+
+                            Text("訂單進度")
+                                .font(.system(size: 29, weight: .bold))
+                        }
+                        .padding(.top, 18)
+
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .fill(FigmaPalette.softPink)
+                            .overlay {
+                                HStack(spacing: 14) {
+                                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                        .fill(Color.white)
+                                        .frame(width: 118, height: 106)
+                                        .overlay {
+                                            RemoteAssetImage(
+                                                urlString: order.primaryItem?.imageURL ?? "",
+                                                fallbackSystemName: "gift.fill",
+                                                contentMode: .fit
+                                            )
+                                            .padding(14)
+                                        }
+
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(order.title)
+                                            .font(.system(size: 18, weight: .bold))
+                                        Text("付款方式：\(order.paymentMethod.rawValue)")
+                                            .font(.system(size: 12, weight: .regular))
+                                            .foregroundColor(.secondary)
+                                        Text("總額：HKD \(Int(order.totalPrice.rounded()))")
+                                            .font(.system(size: 16, weight: .bold))
+                                    }
+
+                                    Spacer(minLength: 0)
+
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 38, weight: .regular))
+                                        .foregroundColor(.blue.opacity(0.9))
+                                        .padding(.trailing, 10)
+                                }
+                                .padding(.horizontal, 15)
+                                .padding(.vertical, 14)
+                            }
+                            .frame(height: 133)
+
+                        CheckoutInfoSection(
+                            title: "地點：",
+                            value: order.pickupLocation
+                        )
+
+                        CheckoutInfoSection(
+                            title: "預計取貨時間",
+                            value: timeText(from: order.pickupDate)
+                        )
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("備註：")
+                                .font(.system(size: 12, weight: .bold))
+                            Text(order.note)
+                                .font(.system(size: 15, weight: .bold))
+                        }
+
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .fill(Color.white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                                    .stroke(FigmaPalette.softPink.opacity(0.75), lineWidth: 1.2)
+                            )
+                            .shadow(color: FigmaPalette.softPink.opacity(0.55), radius: 14, x: 0, y: 6)
+                            .overlay {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    Text("訂單進度")
+                                        .font(.system(size: 16, weight: .bold))
+
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("訂單號碼 \(order.sourceOrderId)")
+                                            .font(.system(size: 19, weight: .bold))
+                                        Text("下單時間 \(dateTimeText(from: order.createdAt))")
+                                            .font(.system(size: 16, weight: .bold))
+                                    }
+
+                                    ZStack(alignment: .leading) {
+                                        Capsule(style: .continuous)
+                                            .stroke(Color.black, lineWidth: 1)
+                                            .frame(height: 14)
+                                        Capsule(style: .continuous)
+                                            .fill(FigmaPalette.softPink)
+                                            .frame(width: 238, height: 6)
+                                            .padding(.leading, 6)
+                                        Image(systemName: "gift.fill")
+                                            .font(.system(size: 14, weight: .regular))
+                                            .foregroundColor(FigmaPalette.hotPink)
+                                            .frame(maxWidth: .infinity, alignment: .trailing)
+                                            .padding(.trailing, 22)
+                                    }
+
+                                    VStack(spacing: 18) {
+                                        ForEach(Array(progressSteps(for: order).enumerated()), id: \.offset) { _, step in
+                                            HStack(alignment: .top, spacing: 12) {
+                                                Image(systemName: step.isCompleted ? "sparkles" : "circle.dashed")
+                                                    .font(.system(size: 18, weight: .regular))
+                                                    .foregroundColor(step.isCompleted ? FigmaPalette.hotPink : .gray)
+                                                    .frame(width: 24)
+
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(step.title)
+                                                        .font(.system(size: 16, weight: .bold))
+                                                    Text(step.subtitle)
+                                                        .font(.system(size: 16, weight: .bold))
+                                                }
+
+                                                Spacer()
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 22)
+                            }
+                    }
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 26)
+                    .frame(maxWidth: 402)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            } else {
+                VStack(spacing: 18) {
+                    Text("目前沒有可顯示的訂單進度。")
+                        .font(.system(size: 18, weight: .bold))
+                    SoftActionButton(title: "返回首頁", isEnabled: true) {
+                        appModel.dismissTracking()
+                    }
+                }
+                .padding(32)
+            }
+        }
+    }
+
+    private func progressSteps(for order: StorefrontTrackingOrder) -> [TrackingStep] {
+        let preparingDate = order.createdAt.addingTimeInterval(60 * 60)
+        let readyDate = order.createdAt.addingTimeInterval(110 * 60)
+
+        return [
+            TrackingStep(
+                title: "✓ 系統接收到訂單 \(timeText(from: order.createdAt))",
+                subtitle: "你的訂單已確認",
+                isCompleted: true
+            ),
+            TrackingStep(
+                title: "✓ 花束準備中 \(timeText(from: preparingDate))",
+                subtitle: "花藝師正在製作你的花束",
+                isCompleted: true
+            ),
+            TrackingStep(
+                title: "✓ 可到店取貨 \(timeText(from: readyDate))",
+                subtitle: "你可以到店取花，取單號碼\(order.sourceOrderId.replacingOccurrences(of: "#", with: ""))",
+                isCompleted: true
+            ),
+            TrackingStep(
+                title: "○ 已取貨",
+                subtitle: "預計取貨時間：\(order.pickupWindowText)",
+                isCompleted: false
+            )
+        ]
+    }
+
+    private func timeText(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func dateTimeText(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy年M月d日 HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+private struct TrackingStep {
+    let title: String
+    let subtitle: String
+    let isCompleted: Bool
 }
 
 private struct ProfileScreen: View {
@@ -3398,7 +4222,7 @@ private struct DIYBouquetPreviewContent: View {
                         .padding(.horizontal, 62)
 
                         Button {
-                            appModel.addCustomBouquetToCartAndOpenCart()
+                            appModel.addCustomBouquetToCartAndProceedToCheckout()
                         } label: {
                             Capsule(style: .continuous)
                                 .stroke(Color.black, lineWidth: 1)
