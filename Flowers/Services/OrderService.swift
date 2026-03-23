@@ -15,12 +15,51 @@ struct StorefrontOrderLineItem {
     let productName: String
     let unitPrice: Double
     let quantity: Int
+    let inventoryItems: [BouquetItemData]
 }
 
 struct SubmittedStorefrontOrder {
     let documentID: String
     let sourceOrderId: String
     let createdAt: Date
+}
+
+private struct InventoryDeductionLine {
+    let flowerId: String
+    let flowerName: String
+    let quantity: Int
+}
+
+private struct InventoryWriteTarget {
+    let documentRef: DocumentReference
+    let fieldName: String
+    let updatedQuantity: Int
+}
+
+private enum OrderServiceError: LocalizedError {
+    case invalidFlowerReference(String)
+    case flowerNotFound(String)
+    case missingStockQuantity(String)
+    case missingInventoryCode(String)
+    case inventoryRecordNotFound(String)
+    case insufficientStock(flowerName: String, available: Int, requested: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFlowerReference(let flowerName):
+            return "花材“\(flowerName)”缺少有效的库存 ID，无法提交订单。"
+        case .flowerNotFound(let flowerName):
+            return "数据库里找不到花材“\(flowerName)”，无法扣减库存。"
+        case .missingStockQuantity(let flowerName):
+            return "花材“\(flowerName)”还没有配置库存数量。"
+        case .missingInventoryCode(let flowerName):
+            return "花材“\(flowerName)”没有配置 inventory code，无法扣减库存。"
+        case .inventoryRecordNotFound(let code):
+            return "库存表里找不到编码为“\(code)”的记录。"
+        case let .insufficientStock(flowerName, available, requested):
+            return "花材“\(flowerName)”库存不足，当前剩余 \(available)，需要 \(requested)。"
+        }
+    }
 }
 
 // MARK: - 订单服务
@@ -73,6 +112,8 @@ class OrderService: ObservableObject {
             userId: FirebaseManager.shared.currentUser?.uid,
             totalPrice: bouquet.totalPrice
         )
+        let inventoryItems = inventoryLines(from: bouquetItems)
+        let orderRef = db.collection("orders").document()
         
         let orderData: [String: Any] = [
             "sourceOrderId": sourceOrderId,
@@ -97,6 +138,13 @@ class OrderService: ObservableObject {
                 "createdAt": Timestamp(date: bouquetData.createdAt),
                 "totalPrice": bouquetData.totalPrice
             ],
+            "inventoryItems": inventoryItems.map { item in
+                [
+                    "flowerId": item.flowerId,
+                    "flowerName": item.flowerName,
+                    "quantity": item.quantity
+                ]
+            },
             "customerName": customerName,
             "customerPhone": customerPhone,
             "deliveryAddress": deliveryAddress,
@@ -107,7 +155,11 @@ class OrderService: ObservableObject {
             "userId": FirebaseManager.shared.currentUser?.uid ?? ""
         ]
         
-        db.collection("orders").addDocument(data: orderData) { error in
+        submitOrderDocument(
+            orderRef: orderRef,
+            orderData: orderData,
+            inventoryItems: inventoryItems
+        ) { error in
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -140,6 +192,7 @@ class OrderService: ObservableObject {
         let now = Date()
         let userId = FirebaseManager.shared.currentUser?.uid ?? "guest-demo"
         let orderRef = db.collection("orders").document()
+        let inventoryItems = inventoryLines(from: items)
 
         let orderData: [String: Any] = [
             "sourceOrderId": sourceOrderId,
@@ -162,6 +215,13 @@ class OrderService: ObservableObject {
                 "totalPrice": totalPrice,
                 "name": orderName
             ],
+            "inventoryItems": inventoryItems.map { item in
+                [
+                    "flowerId": item.flowerId,
+                    "flowerName": item.flowerName,
+                    "quantity": item.quantity
+                ]
+            },
             "customerName": customerName,
             "customerPhone": customerPhone,
             "status": OrderStatus.pending.rawValue,
@@ -169,7 +229,11 @@ class OrderService: ObservableObject {
             "deliveryDate": Timestamp(date: deliveryDate)
         ]
 
-        orderRef.setData(orderData) { error in
+        submitOrderDocument(
+            orderRef: orderRef,
+            orderData: orderData,
+            inventoryItems: inventoryItems
+        ) { error in
             if let error {
                 completion(.failure(error))
             } else {
@@ -311,5 +375,173 @@ class OrderService: ObservableObject {
                 completion(.success(()))
             }
         }
+    }
+
+    private func submitOrderDocument(
+        orderRef: DocumentReference,
+        orderData: [String: Any],
+        inventoryItems: [InventoryDeductionLine],
+        completion: @escaping (Error?) -> Void
+    ) {
+        db.runTransaction({ [weak self] transaction, errorPointer in
+            guard let self else { return nil }
+            var inventoryUpdates: [InventoryWriteTarget] = []
+
+            for item in inventoryItems {
+                do {
+                    let updateTarget = try self.resolveInventoryWriteTarget(
+                        for: item,
+                        transaction: transaction
+                    )
+                    inventoryUpdates.append(updateTarget)
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+            }
+
+            transaction.setData(orderData, forDocument: orderRef)
+
+            for updateTarget in inventoryUpdates {
+                transaction.updateData([
+                    updateTarget.fieldName: updateTarget.updatedQuantity,
+                    "isAvailable": updateTarget.updatedQuantity > 0
+                ], forDocument: updateTarget.documentRef)
+            }
+
+            return nil
+        }) { _, error in
+            completion(error)
+        }
+    }
+
+    private func resolveInventoryWriteTarget(
+        for item: InventoryDeductionLine,
+        transaction: Transaction
+    ) throws -> InventoryWriteTarget {
+        let flowerRef = db.collection("flowers").document(item.flowerId)
+        let flowerSnapshot = try transaction.getDocument(flowerRef)
+
+        guard flowerSnapshot.exists else {
+            throw OrderServiceError.flowerNotFound(item.flowerName)
+        }
+
+        let flowerData = flowerSnapshot.data() ?? [:]
+
+        if let stockNumber = flowerData["stockQuantity"] as? NSNumber {
+            return try buildWriteTarget(
+                documentRef: flowerRef,
+                fieldName: "stockQuantity",
+                currentQuantity: stockNumber.intValue,
+                item: item
+            )
+        }
+
+        let inventoryCode = (flowerData["inventoryCode"] as? String)
+            ?? (flowerData["inventory_code"] as? String)
+            ?? (flowerData["code"] as? String)
+
+        guard let inventoryCode, !inventoryCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw OrderServiceError.missingInventoryCode(item.flowerName)
+        }
+
+        let inventoryRef = db.collection("inventory").document(inventoryCode)
+        let inventorySnapshot = try transaction.getDocument(inventoryRef)
+
+        guard inventorySnapshot.exists else {
+            throw OrderServiceError.inventoryRecordNotFound(inventoryCode)
+        }
+
+        let inventoryData = inventorySnapshot.data() ?? [:]
+        guard let stockNumber = inventoryData["stock"] as? NSNumber else {
+            throw OrderServiceError.missingStockQuantity(item.flowerName)
+        }
+
+        return try buildWriteTarget(
+            documentRef: inventoryRef,
+            fieldName: "stock",
+            currentQuantity: stockNumber.intValue,
+            item: item
+        )
+    }
+
+    private func buildWriteTarget(
+        documentRef: DocumentReference,
+        fieldName: String,
+        currentQuantity: Int,
+        item: InventoryDeductionLine
+    ) throws -> InventoryWriteTarget {
+        let updatedQuantity = currentQuantity - item.quantity
+
+        guard updatedQuantity >= 0 else {
+            throw OrderServiceError.insufficientStock(
+                flowerName: item.flowerName,
+                available: currentQuantity,
+                requested: item.quantity
+            )
+        }
+
+        return InventoryWriteTarget(
+            documentRef: documentRef,
+            fieldName: fieldName,
+            updatedQuantity: updatedQuantity
+        )
+    }
+
+    private func inventoryLines(from bouquetItems: [BouquetItemData]) -> [InventoryDeductionLine] {
+        aggregateInventoryLines(
+            bouquetItems.compactMap { item in
+                let flowerId = item.flowerId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let flowerName = item.flowerName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                guard !flowerId.isEmpty else { return nil }
+                guard item.quantity > 0 else { return nil }
+
+                return InventoryDeductionLine(
+                    flowerId: flowerId,
+                    flowerName: flowerName.isEmpty ? flowerId : flowerName,
+                    quantity: item.quantity
+                )
+            }
+        )
+    }
+
+    private func inventoryLines(from storefrontItems: [StorefrontOrderLineItem]) -> [InventoryDeductionLine] {
+        aggregateInventoryLines(
+            storefrontItems.flatMap { storefrontItem in
+                storefrontItem.inventoryItems.compactMap { inventoryItem in
+                    let flowerId = inventoryItem.flowerId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let flowerName = inventoryItem.flowerName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let totalQuantity = inventoryItem.quantity * storefrontItem.quantity
+
+                    guard !flowerId.isEmpty else { return nil }
+                    guard totalQuantity > 0 else { return nil }
+
+                    return InventoryDeductionLine(
+                        flowerId: flowerId,
+                        flowerName: flowerName.isEmpty ? flowerId : flowerName,
+                        quantity: totalQuantity
+                    )
+                }
+            }
+        )
+    }
+
+    private func aggregateInventoryLines(_ items: [InventoryDeductionLine]) -> [InventoryDeductionLine] {
+        var aggregated: [String: InventoryDeductionLine] = [:]
+
+        for item in items {
+            if let existing = aggregated[item.flowerId] {
+                aggregated[item.flowerId] = InventoryDeductionLine(
+                    flowerId: item.flowerId,
+                    flowerName: item.flowerName,
+                    quantity: existing.quantity + item.quantity
+                )
+            } else {
+                aggregated[item.flowerId] = item
+            }
+        }
+
+        return Array(aggregated.values)
     }
 }

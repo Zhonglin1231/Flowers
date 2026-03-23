@@ -24,6 +24,23 @@ struct FigmaCustomerAppView: View {
                 MainFlowScreen(appModel: appModel)
             }
         }
+        .alert(
+            appModel.authErrorTitle,
+            isPresented: Binding(
+                get: { appModel.authErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        appModel.dismissAuthError()
+                    }
+                }
+            )
+        ) {
+            Button("知道了", role: .cancel) {
+                appModel.dismissAuthError()
+            }
+        } message: {
+            Text(appModel.authErrorMessage ?? "")
+        }
     }
 }
 
@@ -33,6 +50,65 @@ final class FigmaCustomerAppModel: ObservableObject {
         case welcome
         case emailLogin
         case main
+    }
+
+    enum AuthEntryMode {
+        case login
+        case register
+
+        var formTitle: String {
+            switch self {
+            case .login:
+                return "登入你的帳戶"
+            case .register:
+                return "建立新帳戶"
+            }
+        }
+
+        var descriptionText: String {
+            switch self {
+            case .login:
+                return "使用 Firebase 帳戶登入，訂單與花園資料都會綁定到你的帳號。"
+            case .register:
+                return "註冊後會建立 Firebase Auth 帳戶，並在 Firestore 的 users 集合寫入你的用戶資料。"
+            }
+        }
+
+        var primaryActionTitle: String {
+            switch self {
+            case .login:
+                return "登入"
+            case .register:
+                return "註冊並開始使用"
+            }
+        }
+
+        var loadingTitle: String {
+            switch self {
+            case .login:
+                return "登入中..."
+            case .register:
+                return "註冊中..."
+            }
+        }
+
+        var secondaryPrompt: String {
+            switch self {
+            case .login:
+                return "還沒有帳戶？"
+            case .register:
+                return "已經有帳戶？"
+            }
+        }
+
+        var secondaryActionTitle: String {
+            switch self {
+            case .login:
+                return "立即註冊"
+            case .register:
+                return "返回登入"
+            }
+        }
     }
 
     enum MainTab: CaseIterable {
@@ -84,6 +160,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         case farm
         case checkout
         case orderTracking
+        case notifications
     }
 
     enum AssistantFlowStage: Equatable {
@@ -93,6 +170,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     @Published var authState: AuthState = .welcome
+    @Published var authEntryMode: AuthEntryMode = .login
     @Published var activeTab: MainTab = .home
     @Published var overlayScreen: OverlayScreen?
     @Published var email = ""
@@ -106,7 +184,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var selectedOccasion = "生日"
     @Published var selectedColor = "粉色"
     @Published var selectedBudget = "港幣100-200元"
-    @Published var availableFlowers: [Flower] = Flower.sampleFlowers
+    @Published var availableFlowers: [Flower] = []
     @Published var availableBouquetProducts: [BouquetProduct] = []
     @Published var availableWrappingOptions: [BouquetWrappingOption] = []
     @Published var assistantFlowStage: AssistantFlowStage = .chat
@@ -122,32 +200,63 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var showPreviewDisclaimer = false
     @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
     @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-5-0-250428"
+    @Published var assistantAPIKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
+    @Published var assistantModelName = ProcessInfo.processInfo.environment["ARK_CHAT_MODEL"] ?? "doubao-seed-2-0-mini-260215"
+    @Published var assistantComposerText = ""
+    @Published var assistantMessages: [StorefrontAssistantMessage] = []
+    @Published var assistantConversationStep = 1
+    @Published var assistantErrorMessage: String?
+    @Published var isSendingAssistantMessage = false
+    @Published var assistantRecommendationText: String?
+    @Published var isGeneratingAssistantRecommendation = false
     @Published var selectedPaymentMethod: CheckoutPaymentMethod = .alipayHK
     @Published var isShowingCheckoutPriceDetails = false
     @Published var isSubmittingPayment = false
+    @Published var isAuthenticating = false
     @Published var paymentErrorMessage: String?
     @Published var submittedTrackingOrder: StorefrontTrackingOrder?
+    @Published var authErrorTitle = "操作失敗"
+    @Published var authErrorMessage: String?
+    @Published private var restockReminderTargets: [RestockReminderTarget] = []
+    @Published private(set) var unreadRestockReminderKeys: Set<String> = []
+    @Published private(set) var notificationMessages: [StorefrontNotificationMessage] = []
 
     private let flowerService = FlowerService()
     private let bouquetService = BouquetService()
     private let previewService = AIBouquetPreviewService()
+    private let assistantService = StorefrontAIChatService()
     private let storefrontConfigService = StorefrontConfigService()
     private let orderService = OrderService()
+    private let reminderTargetsStorageKey = "storefront.restockReminderTargets"
+    private let unreadReminderStorageKey = "storefront.unreadRestockReminderKeys"
+    private let reminderAvailabilityStorageKey = "storefront.restockReminderAvailability"
+    private let notificationMessagesStorageKey = "storefront.notificationMessages"
     private var cancellables = Set<AnyCancellable>()
     private var liveBouquetCatalog: [BouquetData] = []
+    private var inventoryStocksByCode: [String: Int] = [:]
+    private var lastKnownReminderAvailabilityByKey: [String: Bool] = [:]
     private var hasResolvedRemoteFlowers = false
     private var hasResolvedRemoteBouquets = false
+    private var hasResolvedInventory = false
     private var hasResolvedRemoteWrappingOptions = false
     private var remoteFlowerCount = 0
 
     init() {
+        resetAssistantChat()
+        loadPersistedRestockReminderState()
         setupFlowerBindings()
         setupBouquetBindings()
+        setupInventoryBindings()
         setupPreviewConfigurationBindings()
         setupWrappingBindings()
-        loadLocalFlowersIfNeeded()
         bouquetService.fetchCatalogBouquets()
         storefrontConfigService.startListening()
+
+        if FirebaseManager.shared.hasAuthenticatedUser {
+            authState = .main
+            activeTab = .home
+            email = FirebaseManager.shared.authenticatedEmail ?? ""
+        }
     }
 
     var canLogin: Bool {
@@ -155,8 +264,41 @@ final class FigmaCustomerAppModel: ObservableObject {
         !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var canSubmitAuthForm: Bool {
+        canLogin && !isAuthenticating
+    }
+
     var recommendedBouquet: BouquetProduct {
         selectedProduct
+    }
+
+    var profileDisplayName: String {
+        if let email = FirebaseManager.shared.authenticatedEmail,
+           let userName = email.split(separator: "@").first,
+           !userName.isEmpty {
+            return String(userName)
+        }
+
+        return FirebaseManager.shared.hasAuthenticatedUser ? "花店顧客" : "訪客"
+    }
+
+    var profileEmailText: String {
+        if let authenticatedEmail = FirebaseManager.shared.authenticatedEmail,
+           !authenticatedEmail.isEmpty {
+            return authenticatedEmail
+        }
+
+        let typedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typedEmail.isEmpty ? "訪客模式" : typedEmail
+    }
+
+    var profilePhoneText: String {
+        if let phoneNumber = FirebaseManager.shared.authenticatedPhoneNumber,
+           !phoneNumber.isEmpty {
+            return phoneNumber
+        }
+
+        return FirebaseManager.shared.hasAuthenticatedUser ? "未設定" : "訪客模式"
     }
     
     var featuredBouquetProduct: BouquetProduct? {
@@ -173,6 +315,55 @@ final class FigmaCustomerAppModel: ObservableObject {
         return flowers.filter { $0.category == selectedFlowerCategory }
     }
 
+    var isLoadingFlowerCatalog: Bool {
+        !hasResolvedRemoteFlowers && availableFlowers.isEmpty
+    }
+
+    var flowerCatalogStateMessage: String? {
+        if isLoadingFlowerCatalog {
+            return "正在從 Firestore 載入真實花材資料..."
+        }
+
+        if availableFlowers.isEmpty {
+            return "Firestore 的 flowers 暫時沒有可展示的花材。"
+        }
+
+        if filteredFlowers.isEmpty {
+            return "這個分類暫時沒有可選花材。"
+        }
+
+        return nil
+    }
+
+    var assistantCanSendMessage: Bool {
+        !assistantComposerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isSendingAssistantMessage
+    }
+
+    var assistantDataStatusText: String {
+        var lines: [String] = []
+
+        if hasResolvedRemoteFlowers {
+            lines.append("花材 \(availableFlowers.count) 款")
+        } else {
+            lines.append("花材載入中")
+        }
+
+        if hasResolvedRemoteBouquets {
+            lines.append("花束 \(availableBouquetProducts.count) 款")
+        } else {
+            lines.append("花束載入中")
+        }
+
+        if hasResolvedRemoteWrappingOptions {
+            lines.append("包裝 \(availableWrappingOptions.count) 款")
+        } else {
+            lines.append("包裝載入中")
+        }
+
+        return lines.joined(separator: " · ")
+    }
+
     var cartTotalPrice: Double {
         cartItems.reduce(0) { partial, item in
             partial + unitPrice(for: item.product) * Double(item.quantity)
@@ -181,6 +372,14 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     var cartTotalPriceText: String {
         "HKD \(Int(cartTotalPrice.rounded()))"
+    }
+
+    var hasUnreadRestockAlerts: Bool {
+        unreadNotificationCount > 0
+    }
+
+    var unreadNotificationCount: Int {
+        notificationMessages.filter(\.isUnread).count
     }
 
     var diyFlowerCategories: [FlowerCategory] {
@@ -326,6 +525,28 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
     }
 
+    var diyAssistantSummaryText: String {
+        let trimmedRecommendation = assistantRecommendationText?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let trimmedRecommendation, !trimmedRecommendation.isEmpty {
+            return trimmedRecommendation
+        }
+
+        return suggestedDesignText
+    }
+
+    var diyAssistantSummaryDetail: String? {
+        let trimmedRecommendation = assistantRecommendationText?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let trimmedRecommendation, !trimmedRecommendation.isEmpty {
+            return nil
+        }
+
+        return "建議花材：\(recommendedFlowerTypes.joined(separator: "、"))"
+    }
+
     var customBouquetHeadline: String {
         if selectedOccasion.contains("畢業") {
             return "畢業祝賀花束"
@@ -379,6 +600,28 @@ final class FigmaCustomerAppModel: ObservableObject {
     
     var canGenerateDIYPreview: Bool {
         missingPreviewReferenceMessages.isEmpty
+    }
+
+    var hasDIYProgress: Bool {
+        !selectedDIYFlowers.isEmpty
+            || selectedWrappingOptionID != nil
+            || !cardMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || selectedBlessingTemplateID != nil
+            || generatedPreview != nil
+            || assistantFlowStage == .preview
+    }
+
+    var hasAssistantRecommendationProgress: Bool {
+        assistantConversationStep > 1
+            || assistantRecommendationText != nil
+            || isGeneratingAssistantRecommendation
+            || hasDIYProgress
+            || {
+                if case .diy = assistantFlowStage {
+                    return true
+                }
+                return false
+            }()
     }
 
     var checkoutPrimaryItem: CartItem? {
@@ -455,25 +698,86 @@ final class FigmaCustomerAppModel: ObservableObject {
         return itemLines
     }
 
-    func showEmailLogin() {
+    func showEmailLogin(mode: AuthEntryMode = .login) {
+        authEntryMode = mode
+        authErrorMessage = nil
+        authErrorTitle = "操作失敗"
+        password = ""
         authState = .emailLogin
     }
 
     func enterAsGuest() {
+        authEntryMode = .login
+        authErrorMessage = nil
         authState = .main
         activeTab = .home
         overlayScreen = nil
     }
 
-    func login() {
-        guard canLogin else { return }
-        authState = .main
-        activeTab = .home
-        overlayScreen = nil
+    func submitAuthForm() {
+        guard canSubmitAuthForm else { return }
+
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPassword = password
+
+        email = normalizedEmail
+        dismissAuthError()
+        isAuthenticating = true
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            defer {
+                self.isAuthenticating = false
+            }
+
+            do {
+                switch self.authEntryMode {
+                case .login:
+                    try await FirebaseManager.shared.login(email: normalizedEmail, password: resolvedPassword)
+                case .register:
+                    try await FirebaseManager.shared.register(email: normalizedEmail, password: resolvedPassword)
+                }
+
+                self.finalizeSuccessfulAuthentication()
+            } catch {
+                self.presentAuthError(
+                    title: self.authEntryMode == .login ? "登入失敗" : "註冊失敗",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 
     func backToWelcome() {
+        authEntryMode = .login
+        password = ""
+        isAuthenticating = false
+        dismissAuthError()
         authState = .welcome
+    }
+
+    func logout() {
+        do {
+            if FirebaseManager.shared.currentUser != nil {
+                try FirebaseManager.shared.signOut()
+            }
+            resetSessionStateAfterLogout()
+        } catch {
+            authErrorTitle = "登出失敗"
+            authErrorMessage = error.localizedDescription
+        }
+    }
+
+    func dismissAuthError() {
+        authErrorTitle = "操作失敗"
+        authErrorMessage = nil
+    }
+
+    func switchAuthEntryMode() {
+        authEntryMode = authEntryMode == .login ? .register : .login
+        password = ""
+        dismissAuthError()
     }
 
     func selectTab(_ tab: MainTab) {
@@ -492,8 +796,24 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     func openCustomBouquetFlow(from tab: MainTab = .assistant) {
         activeTab = tab
+        overlayScreen = .assistantJourney
+    }
+
+    func startAssistantRecommendationFlow(from tab: MainTab = .assistant) {
+        activeTab = tab
         resetAssistantSelections()
         resetDIYFlow()
+        clearAssistantRecommendation()
+        assistantConversationStep = 1
+        overlayScreen = .assistantJourney
+    }
+
+    func openDirectDIYFlow(from tab: MainTab = .browse) {
+        activeTab = tab
+        if !hasDIYProgress {
+            resetDIYFlow()
+        }
+        proceedToDIYDesigner()
         overlayScreen = .assistantJourney
     }
 
@@ -512,6 +832,10 @@ final class FigmaCustomerAppModel: ObservableObject {
         overlayScreen = nil
     }
 
+    func openNotifications() {
+        overlayScreen = .notifications
+    }
+
     func cartQuantity(for productID: String) -> Int {
         cartItems.first(where: { $0.product.id == productID })?.quantity ?? 0
     }
@@ -521,6 +845,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func addProductToCart(_ product: BouquetProduct) {
+        guard canIncrementCartQuantity(for: product) else { return }
         if let index = cartItems.firstIndex(where: { $0.product.id == product.id }) {
             cartItems[index].quantity += 1
         } else {
@@ -585,11 +910,129 @@ final class FigmaCustomerAppModel: ObservableObject {
         selectedBudget = "港幣100-200元"
     }
 
+    func resetAssistantChat() {
+        assistantComposerText = ""
+        assistantErrorMessage = nil
+        isSendingAssistantMessage = false
+        assistantRecommendationText = nil
+        isGeneratingAssistantRecommendation = false
+        assistantConversationStep = 1
+        assistantMessages = [
+            StorefrontAssistantMessage(
+                role: .assistant,
+                text: "你好，我已经接上实时数据库了。你可以直接问我现有什么花、价格多少、哪些花束适合送礼，或让我按预算推荐。"
+            )
+        ]
+    }
+
+    func clearAssistantRecommendation() {
+        assistantRecommendationText = nil
+        assistantErrorMessage = nil
+        isGeneratingAssistantRecommendation = false
+    }
+
+    func sendAssistantPreset(_ text: String) async {
+        guard !isSendingAssistantMessage else { return }
+        assistantComposerText = text
+        await sendAssistantMessage()
+    }
+
+    func sendAssistantMessage() async {
+        let trimmedMessage = assistantComposerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty, !isSendingAssistantMessage else { return }
+
+        assistantComposerText = ""
+        assistantErrorMessage = nil
+        assistantMessages.append(
+            StorefrontAssistantMessage(
+                role: .user,
+                text: trimmedMessage
+            )
+        )
+
+        isSendingAssistantMessage = true
+        defer {
+            isSendingAssistantMessage = false
+        }
+
+        do {
+            let reply = try await assistantService.reply(
+                history: assistantMessages,
+                context: buildAssistantContext(),
+                apiKey: assistantAPIKey,
+                modelName: assistantModelName
+            )
+            assistantMessages.append(
+                StorefrontAssistantMessage(
+                    role: .assistant,
+                    text: reply
+                )
+            )
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            assistantErrorMessage = message
+            assistantMessages.append(
+                StorefrontAssistantMessage(
+                    role: .assistant,
+                    text: "暂时无法生成回答：\(message)"
+                )
+            )
+        }
+    }
+
+    func generateAssistantRecommendation() async {
+        assistantRecommendationText = nil
+        assistantErrorMessage = nil
+        isGeneratingAssistantRecommendation = true
+
+        defer {
+            isGeneratingAssistantRecommendation = false
+        }
+
+        let prompt = """
+        请根据以下顾客需求，基于当前数据库中真实存在的花材、花束、包装和库存，给出最后的购买推荐。
+
+        顾客需求：
+        - 购买类型：\(selectedPurchaseType)
+        - 收花对象：\(selectedRecipient)
+        - 送花场合：\(selectedOccasion)
+        - 颜色偏好：\(selectedColor)
+        - 预算范围：\(selectedBudget)
+
+        输出要求：
+        - 用中文回答。
+        - 先给一句总体推荐结论。
+        - 再给 2 到 3 个真实可买的推荐，可以是成品花束，也可以是花材组合。
+        - 尽量写出具体名称、价格或预算匹配情况。
+        - 如果数据库里没有完全匹配的选项，要明确说明，并给最接近的推荐。
+        - 最后补一句，告诉用户进入 DIY 时优先看哪类花材或包装。
+        - 不要输出 JSON。
+        """
+
+        do {
+            let reply = try await assistantService.reply(
+                history: [
+                    StorefrontAssistantMessage(
+                        role: .user,
+                        text: prompt
+                    )
+                ],
+                context: buildAssistantContext(),
+                apiKey: assistantAPIKey,
+                modelName: assistantModelName
+            )
+            assistantRecommendationText = reply
+        } catch {
+            assistantErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     func quantity(for flower: Flower) -> Int {
         selectedFlowerQuantities[flower.id, default: 0]
     }
 
     func increaseFlowerQuantity(_ flower: Flower) {
+        guard canIncrementDIYQuantity(for: flower) else { return }
         selectedFlowerQuantities[flower.id, default: 0] += 1
     }
 
@@ -712,7 +1155,20 @@ final class FigmaCustomerAppModel: ObservableObject {
                 ?? selectedWrappingOption?.imageURL
                 ?? selectedDIYFlowers.first?.flower.imageURL?.absoluteString
                 ?? "",
-            accent: FigmaPalette.softPink
+            accent: FigmaPalette.softPink,
+            inventoryItems: selectedDIYFlowers.map { line in
+                BouquetItemData(
+                    flowerId: line.flower.id,
+                    flowerName: line.flower.name,
+                    flowerEmoji: line.flower.emoji,
+                    flowerPrice: line.flower.price,
+                    quantity: line.quantity,
+                    positionX: 0,
+                    positionY: 0,
+                    scale: 1,
+                    rotation: 0
+                )
+            }
         )
         addProductToCart(product)
     }
@@ -755,7 +1211,8 @@ final class FigmaCustomerAppModel: ObservableObject {
                 productId: item.product.id,
                 productName: item.product.name,
                 unitPrice: unitPrice(for: item.product),
-                quantity: item.quantity
+                quantity: item.quantity,
+                inventoryItems: item.product.inventoryItems
             )
         }
 
@@ -866,6 +1323,38 @@ final class FigmaCustomerAppModel: ObservableObject {
                 if let modelName = config.modelName {
                     self.modelName = modelName
                 }
+
+                if let assistantApiKey = config.assistantApiKey {
+                    self.assistantAPIKey = assistantApiKey
+                }
+
+                if let assistantModelName = config.assistantModelName {
+                    self.assistantModelName = assistantModelName
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func setupInventoryBindings() {
+        storefrontConfigService.$inventoryStocksByCode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] stocksByCode in
+                guard let self else { return }
+                self.inventoryStocksByCode = stocksByCode
+                if self.hasResolvedInventory {
+                    self.evaluateRestockReminders()
+                }
+            }
+            .store(in: &cancellables)
+
+        storefrontConfigService.$hasResolvedInventory
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasResolved in
+                guard let self else { return }
+                self.hasResolvedInventory = hasResolved
+                if hasResolved {
+                    self.evaluateRestockReminders()
+                }
             }
             .store(in: &cancellables)
     }
@@ -893,12 +1382,43 @@ final class FigmaCustomerAppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func loadLocalFlowersIfNeeded() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self, self.availableFlowers.isEmpty else { return }
-            self.availableFlowers = Flower.sampleFlowers
-            self.refreshBouquetCatalog()
-        }
+    private func finalizeSuccessfulAuthentication() {
+        authEntryMode = .login
+        dismissAuthError()
+        authState = .main
+        activeTab = .home
+        overlayScreen = nil
+        email = FirebaseManager.shared.authenticatedEmail ?? email
+        password = ""
+    }
+
+    private func presentAuthError(title: String, message: String) {
+        authErrorTitle = title
+        authErrorMessage = message
+    }
+
+    private func resetSessionStateAfterLogout() {
+        authErrorMessage = nil
+        authErrorTitle = "操作失敗"
+        authState = .welcome
+        authEntryMode = .login
+        activeTab = .home
+        overlayScreen = nil
+        email = ""
+        password = ""
+        isAuthenticating = false
+        selectedProduct = BouquetProduct.defaultSelection
+        cartItems = []
+        browseMode = .materials
+        selectedFlowerCategory = nil
+        selectedPaymentMethod = .alipayHK
+        isShowingCheckoutPriceDetails = false
+        isSubmittingPayment = false
+        paymentErrorMessage = nil
+        submittedTrackingOrder = nil
+        resetAssistantSelections()
+        resetDIYFlow()
+        resetAssistantChat()
     }
 
     private func resetDIYFlow() {
@@ -938,6 +1458,59 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
     }
 
+    private func buildAssistantContext() -> StorefrontAssistantContext {
+        let flowerRecords = availableFlowers.prefix(50).map { flower in
+            StorefrontAssistantContext.FlowerRecord(
+                name: flower.name,
+                englishName: flower.englishName,
+                category: flower.categoryDisplayName,
+                color: flower.colorName,
+                priceHKD: flower.price,
+                stock: availableStock(for: flower) ?? flower.stockQuantity,
+                inventoryCode: flower.inventoryCode,
+                unit: flower.unitDisplayName,
+                season: flower.season,
+                description: flower.description
+            )
+        }
+
+        let bouquetRecords = availableBouquetProducts.prefix(20).map { product in
+            StorefrontAssistantContext.BouquetRecord(
+                name: product.name,
+                tagline: product.tagline,
+                priceText: product.priceText,
+                stock: availableStock(for: product),
+                descriptionLines: product.descriptionLines
+            )
+        }
+
+        let wrappingRecords = availableWrappingOptions.prefix(20).map { option in
+            StorefrontAssistantContext.WrappingRecord(
+                name: option.name,
+                priceHKD: option.price,
+                stock: availableStock(for: option) ?? option.stockQuantity,
+                inventoryCode: option.inventoryCode
+            )
+        }
+
+        return StorefrontAssistantContext(
+            generatedAt: Date(),
+            hasResolvedFlowers: hasResolvedRemoteFlowers,
+            hasResolvedBouquets: hasResolvedRemoteBouquets,
+            hasResolvedWrappingOptions: hasResolvedRemoteWrappingOptions,
+            flowers: Array(flowerRecords),
+            bouquets: Array(bouquetRecords),
+            wrappingOptions: Array(wrappingRecords),
+            currentSelections: StorefrontAssistantContext.CurrentSelections(
+                purchaseType: selectedPurchaseType,
+                recipient: selectedRecipient,
+                occasion: selectedOccasion,
+                color: selectedColor,
+                budget: selectedBudget
+            )
+        )
+    }
+
     private var checkoutPickupDate: Date {
         let calendar = Calendar(identifier: .gregorian)
         let now = Date()
@@ -973,6 +1546,316 @@ final class FigmaCustomerAppModel: ObservableObject {
         return String(format: "#%04d", rawValue)
     }
 
+    func isRestockReminderEnabled(for flower: Flower) -> Bool {
+        restockReminderTargets.contains(reminderTarget(for: flower))
+    }
+
+    func isRestockReminderEnabled(for product: BouquetProduct) -> Bool {
+        restockReminderTargets.contains(reminderTarget(for: product))
+    }
+
+    func isRestockReminderEnabled(for option: BouquetWrappingOption) -> Bool {
+        restockReminderTargets.contains(reminderTarget(for: option))
+    }
+
+    func toggleRestockReminder(for flower: Flower) {
+        toggleRestockReminderTarget(reminderTarget(for: flower))
+    }
+
+    func toggleRestockReminder(for product: BouquetProduct) {
+        toggleRestockReminderTarget(reminderTarget(for: product))
+    }
+
+    func toggleRestockReminder(for option: BouquetWrappingOption) {
+        toggleRestockReminderTarget(reminderTarget(for: option))
+    }
+
+    func availableStock(for flower: Flower) -> Int? {
+        if let inventoryCode = normalizedInventoryCode(flower.inventoryCode),
+           let inventoryStock = inventoryStocksByCode[inventoryCode] {
+            return inventoryStock
+        }
+
+        return flower.stockQuantity
+    }
+
+    func availableStock(for option: BouquetWrappingOption) -> Int? {
+        if let inventoryCode = normalizedInventoryCode(option.inventoryCode),
+           let inventoryStock = inventoryStocksByCode[inventoryCode] {
+            return inventoryStock
+        }
+
+        return option.stockQuantity
+    }
+
+    func availableStock(for product: BouquetProduct) -> Int? {
+        if let flower = singleFlower(for: product) {
+            return flower.stockQuantity
+        }
+
+        let requiredInventoryItems = product.inventoryItems.filter { $0.quantity > 0 }
+        guard !requiredInventoryItems.isEmpty else { return nil }
+
+        var remainingCounts: [Int] = []
+        for item in requiredInventoryItems {
+            guard let flower = matchedFlower(for: item),
+                  let stockQuantity = flower.stockQuantity else {
+                return nil
+            }
+
+            remainingCounts.append(stockQuantity / item.quantity)
+        }
+
+        return remainingCounts.min()
+    }
+
+    func stockText(for flower: Flower) -> String {
+        if let stockQuantity = availableStock(for: flower) {
+            return "剩餘\(stockQuantity)\(flower.unitDisplayName)"
+        }
+
+        if hasResolvedInventory {
+            return "庫存記錄未匹配"
+        }
+
+        return "剩餘庫存待同步"
+    }
+
+    func stockText(for option: BouquetWrappingOption) -> String {
+        if let stockQuantity = availableStock(for: option) {
+            return "剩餘\(stockQuantity)款"
+        }
+
+        if hasResolvedInventory {
+            return "庫存記錄未匹配"
+        }
+
+        return "剩餘庫存待同步"
+    }
+
+    func stockText(for product: BouquetProduct) -> String {
+        if let stockQuantity = availableStock(for: product) {
+            return "剩餘\(stockQuantity)\(stockUnitLabel(for: product))"
+        }
+
+        if hasResolvedInventory {
+            return "庫存記錄未匹配"
+        }
+
+        return "剩餘庫存待同步"
+    }
+
+    func canIncrementDIYQuantity(for flower: Flower) -> Bool {
+        guard let stockQuantity = availableStock(for: flower) else { return true }
+        return quantity(for: flower) < stockQuantity
+    }
+
+    func canIncrementCartQuantity(for product: BouquetProduct) -> Bool {
+        guard let stockQuantity = availableStock(for: product) else { return true }
+        return cartQuantity(for: product.id) < stockQuantity
+    }
+
+    func canSelectWrappingOption(_ option: BouquetWrappingOption) -> Bool {
+        guard let stockQuantity = availableStock(for: option) else { return true }
+        return stockQuantity > 0
+    }
+
+    func isSoldOut(_ product: BouquetProduct) -> Bool {
+        availableStock(for: product) == 0
+    }
+
+    private func matchedFlower(for item: BouquetItemData) -> Flower? {
+        availableFlowers.first(where: { $0.id == item.flowerId })
+            ?? availableFlowers.first(where: { $0.name == item.flowerName })
+    }
+
+    private func singleFlower(for product: BouquetProduct) -> Flower? {
+        guard product.inventoryItems.count == 1,
+              let item = product.inventoryItems.first,
+              item.quantity == 1 else {
+            return nil
+        }
+
+        return matchedFlower(for: item)
+    }
+
+    private func stockUnitLabel(for product: BouquetProduct) -> String {
+        if let flower = singleFlower(for: product) {
+            return flower.unitDisplayName
+        }
+
+        return "束"
+    }
+
+    private func normalizedInventoryCode(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func reminderTarget(for flower: Flower) -> RestockReminderTarget {
+        RestockReminderTarget(kind: .flower, referenceID: flower.id, title: flower.name)
+    }
+
+    private func reminderTarget(for product: BouquetProduct) -> RestockReminderTarget {
+        RestockReminderTarget(kind: .product, referenceID: product.id, title: product.name)
+    }
+
+    private func reminderTarget(for option: BouquetWrappingOption) -> RestockReminderTarget {
+        RestockReminderTarget(kind: .wrapping, referenceID: option.id, title: option.name)
+    }
+
+    private func toggleRestockReminderTarget(_ target: RestockReminderTarget) {
+        if let existingIndex = restockReminderTargets.firstIndex(of: target) {
+            restockReminderTargets.remove(at: existingIndex)
+            unreadRestockReminderKeys.remove(target.id)
+            lastKnownReminderAvailabilityByKey.removeValue(forKey: target.id)
+        } else {
+            restockReminderTargets.append(target)
+            lastKnownReminderAvailabilityByKey[target.id] = isRestockTargetAvailable(target)
+        }
+
+        persistRestockReminderState()
+    }
+
+    private func evaluateRestockReminders() {
+        guard !restockReminderTargets.isEmpty else { return }
+        var fulfilledTargetIDs = Set<String>()
+
+        for target in restockReminderTargets {
+            let currentAvailability = isRestockTargetAvailable(target)
+            let previousAvailability = lastKnownReminderAvailabilityByKey[target.id]
+
+            if currentAvailability && hasRestockNotification(for: target) {
+                fulfilledTargetIDs.insert(target.id)
+                lastKnownReminderAvailabilityByKey[target.id] = currentAvailability
+                continue
+            }
+
+            if previousAvailability == false && currentAvailability {
+                unreadRestockReminderKeys.insert(target.id)
+                appendRestockNotification(for: target)
+                fulfilledTargetIDs.insert(target.id)
+            }
+
+            lastKnownReminderAvailabilityByKey[target.id] = currentAvailability
+        }
+
+        if !fulfilledTargetIDs.isEmpty {
+            restockReminderTargets.removeAll { fulfilledTargetIDs.contains($0.id) }
+            for targetID in fulfilledTargetIDs {
+                lastKnownReminderAvailabilityByKey.removeValue(forKey: targetID)
+            }
+        }
+
+        persistRestockReminderState()
+    }
+
+    private func isRestockTargetAvailable(_ target: RestockReminderTarget) -> Bool {
+        switch target.kind {
+        case .flower:
+            guard let flower = availableFlowers.first(where: { $0.id == target.referenceID }) else {
+                return false
+            }
+            return (availableStock(for: flower) ?? 0) > 0
+        case .product:
+            guard let product = resolveProduct(withID: target.referenceID) else {
+                return false
+            }
+            return (availableStock(for: product) ?? 0) > 0
+        case .wrapping:
+            guard let option = availableWrappingOptions.first(where: { $0.id == target.referenceID }) else {
+                return false
+            }
+            return (availableStock(for: option) ?? 0) > 0
+        }
+    }
+
+    private func resolveProduct(withID productID: String) -> BouquetProduct? {
+        if selectedProduct.id == productID {
+            return selectedProduct
+        }
+
+        if let availableProduct = availableBouquetProducts.first(where: { $0.id == productID }) {
+            return availableProduct
+        }
+
+        return cartItems.first(where: { $0.product.id == productID })?.product
+    }
+
+    private func loadPersistedRestockReminderState() {
+        let defaults = UserDefaults.standard
+        let decoder = JSONDecoder()
+
+        if let targetsData = defaults.data(forKey: reminderTargetsStorageKey),
+           let targets = try? decoder.decode([RestockReminderTarget].self, from: targetsData) {
+            restockReminderTargets = targets
+        }
+
+        if let unreadKeys = defaults.array(forKey: unreadReminderStorageKey) as? [String] {
+            unreadRestockReminderKeys = Set(unreadKeys)
+        }
+
+        if let availability = defaults.dictionary(forKey: reminderAvailabilityStorageKey) as? [String: Bool] {
+            lastKnownReminderAvailabilityByKey = availability
+        }
+
+        if let messagesData = defaults.data(forKey: notificationMessagesStorageKey),
+           let messages = try? decoder.decode([StorefrontNotificationMessage].self, from: messagesData) {
+            notificationMessages = messages.sorted { $0.createdAt > $1.createdAt }
+        }
+    }
+
+    private func persistRestockReminderState() {
+        let defaults = UserDefaults.standard
+        let encoder = JSONEncoder()
+
+        if let targetsData = try? encoder.encode(restockReminderTargets) {
+            defaults.set(targetsData, forKey: reminderTargetsStorageKey)
+        }
+
+        defaults.set(Array(unreadRestockReminderKeys), forKey: unreadReminderStorageKey)
+        defaults.set(lastKnownReminderAvailabilityByKey, forKey: reminderAvailabilityStorageKey)
+
+        if let messagesData = try? encoder.encode(notificationMessages) {
+            defaults.set(messagesData, forKey: notificationMessagesStorageKey)
+        }
+    }
+
+    func markNotificationAsRead(_ message: StorefrontNotificationMessage) {
+        guard let index = notificationMessages.firstIndex(where: { $0.id == message.id }) else { return }
+        guard notificationMessages[index].isUnread else { return }
+
+        notificationMessages[index].isUnread = false
+
+        if !notificationMessages.contains(where: { $0.referenceID == message.referenceID && $0.isUnread }) {
+            unreadRestockReminderKeys.remove(message.referenceID)
+        }
+
+        persistRestockReminderState()
+    }
+
+    private func appendRestockNotification(for target: RestockReminderTarget) {
+        let message = StorefrontNotificationMessage(
+            id: UUID().uuidString,
+            kind: .restock,
+            senderName: "蔚蘭園",
+            title: target.title,
+            body: "\(target.title) 到貨提醒❤️",
+            referenceID: target.id,
+            createdAt: Date(),
+            isUnread: true
+        )
+
+        notificationMessages.insert(message, at: 0)
+    }
+
+    private func hasRestockNotification(for target: RestockReminderTarget) -> Bool {
+        notificationMessages.contains { message in
+            message.kind == .restock && message.referenceID == target.id
+        }
+    }
+
     private func unitPrice(for product: BouquetProduct) -> Double {
         let digits = product.priceText
             .replacingOccurrences(of: "HKD", with: "")
@@ -1001,6 +1884,29 @@ struct BouquetProduct: Identifiable, Hashable {
     let priceText: String
     let imageURL: String
     let accent: Color
+    let inventoryItems: [BouquetItemData]
+
+    init(
+        id: String,
+        name: String,
+        tagline: String,
+        descriptionLines: [String],
+        longDescription: [String],
+        priceText: String,
+        imageURL: String,
+        accent: Color,
+        inventoryItems: [BouquetItemData] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.tagline = tagline
+        self.descriptionLines = descriptionLines
+        self.longDescription = longDescription
+        self.priceText = priceText
+        self.imageURL = imageURL
+        self.accent = accent
+        self.inventoryItems = inventoryItems
+    }
     
     static var defaultFeatured: BouquetProduct {
         catalog.first ?? defaultSelection
@@ -1101,7 +2007,20 @@ struct BouquetProduct: Identifiable, Hashable {
             longDescription: [flower.description],
             priceText: "HKD \(Int(flower.price.rounded()))",
             imageURL: flower.imageURL?.absoluteString ?? "",
-            accent: FigmaPalette.softPink
+            accent: FigmaPalette.softPink,
+            inventoryItems: [
+                BouquetItemData(
+                    flowerId: flower.id,
+                    flowerName: flower.name,
+                    flowerEmoji: flower.emoji,
+                    flowerPrice: flower.price,
+                    quantity: 1,
+                    positionX: 0,
+                    positionY: 0,
+                    scale: 1,
+                    rotation: 0
+                )
+            ]
         )
     }
     
@@ -1145,7 +2064,8 @@ struct BouquetProduct: Identifiable, Hashable {
             longDescription: longDescription,
             priceText: "HKD \(Int(resolvedPrice.rounded()))",
             imageURL: resolvedImageURL,
-            accent: FigmaPalette.softPink
+            accent: FigmaPalette.softPink,
+            inventoryItems: bouquet.items
         )
     }
     
@@ -1277,6 +2197,37 @@ struct StorefrontTrackingOrder {
     }
 }
 
+struct RestockReminderTarget: Codable, Identifiable, Hashable {
+    enum Kind: String, Codable {
+        case flower
+        case product
+        case wrapping
+    }
+
+    let kind: Kind
+    let referenceID: String
+    let title: String
+
+    var id: String {
+        "\(kind.rawValue):\(referenceID)"
+    }
+}
+
+struct StorefrontNotificationMessage: Codable, Identifiable, Hashable {
+    enum Kind: String, Codable {
+        case restock
+    }
+
+    let id: String
+    let kind: Kind
+    let senderName: String
+    let title: String
+    let body: String
+    let referenceID: String
+    let createdAt: Date
+    var isUnread: Bool
+}
+
 private struct MainFlowScreen: View {
     @ObservedObject var appModel: FigmaCustomerAppModel
 
@@ -1293,6 +2244,8 @@ private struct MainFlowScreen: View {
                 CheckoutScreen(appModel: appModel)
             case .orderTracking:
                 OrderTrackingScreen(appModel: appModel)
+            case .notifications:
+                NotificationsScreen(appModel: appModel)
             case nil:
                 switch appModel.activeTab {
                 case .home:
@@ -1310,6 +2263,140 @@ private struct MainFlowScreen: View {
         }
         .animation(.easeInOut(duration: 0.22), value: appModel.activeTab)
         .animation(.easeInOut(duration: 0.22), value: appModel.overlayScreen != nil)
+    }
+}
+
+private struct NotificationsScreen: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        MainScreenContainer(selectedTab: appModel.activeTab, appModel: appModel) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top) {
+                        Button(action: appModel.closeOverlay) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(FigmaPalette.palePink)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        NotificationBellButton(
+                            unreadCount: appModel.unreadNotificationCount,
+                            size: 30,
+                            action: appModel.openNotifications
+                        )
+                    }
+                    .padding(.top, 18)
+
+                    Text("我的消息")
+                        .font(.system(size: 29, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 12)
+                        .padding(.bottom, 26)
+
+                    if appModel.notificationMessages.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "bell.slash")
+                                .font(.system(size: 30, weight: .regular))
+                                .foregroundColor(.black.opacity(0.45))
+
+                            Text("暫時還沒有新消息")
+                                .font(.system(size: 16, weight: .bold))
+
+                            Text("勾選到貨提醒後，補貨時消息會顯示在這裡。")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(appModel.notificationMessages) { message in
+                                NotificationMessageRow(message: message) {
+                                    appModel.markNotificationAsRead(message)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 24)
+                .frame(maxWidth: 402)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+}
+
+private struct NotificationMessageRow: View {
+    let message: StorefrontNotificationMessage
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .fill(FigmaPalette.softPink.opacity(0.55))
+                            .frame(width: 47, height: 47)
+
+                        Image(systemName: "storefront.fill")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.black)
+                    }
+                    .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .top) {
+                            Text(message.senderName)
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.black)
+
+                            Spacer()
+
+                            Text(timestampText)
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundColor(.black)
+                        }
+
+                        Text(message.body)
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundColor(.black)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if message.isUnread {
+                        Text("1")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 18, height: 18)
+                            .background(
+                                Circle()
+                                    .fill(Color(red: 1.0, green: 0.45, blue: 0.47))
+                            )
+                            .padding(.top, 8)
+                    }
+                }
+                .padding(.vertical, 18)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(height: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var timestampText: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/MM/dd H:mm"
+        return formatter.string(from: message.createdAt)
     }
 }
 
@@ -1348,11 +2435,11 @@ private struct WelcomeScreen: View {
 
                 VStack(spacing: 20) {
                     SoftActionButton(title: "電郵 / 電話登入", isEnabled: true) {
-                        appModel.showEmailLogin()
+                        appModel.showEmailLogin(mode: .login)
                     }
 
                     SoftActionButton(title: "註冊帳戶", isEnabled: true) {
-                        appModel.showEmailLogin()
+                        appModel.showEmailLogin(mode: .register)
                     }
 
                     SoftActionButton(title: "以訪客身份繼續", isEnabled: true) {
@@ -1398,9 +2485,18 @@ private struct EmailLoginScreen: View {
                 .padding(.top, 8)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("電話/郵箱")
-                        .font(.system(size: 16, weight: .regular))
+                    Text(appModel.authEntryMode.formTitle)
+                        .font(.system(size: 24, weight: .bold))
                         .padding(.top, 30)
+
+                    Text(appModel.authEntryMode.descriptionText)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(.black.opacity(0.7))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("電郵")
+                        .font(.system(size: 16, weight: .regular))
+                        .padding(.top, 6)
 
                     SoftInputField(text: $appModel.email, placeholder: "")
 
@@ -1410,17 +2506,53 @@ private struct EmailLoginScreen: View {
 
                     SoftInputField(text: $appModel.password, placeholder: "", isSecure: true)
 
-                    Button("忘記密碼？") {}
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundColor(.black)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 4)
+                    if appModel.authEntryMode == .login {
+                        Button("忘記密碼？") {}
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 4)
+                    }
 
-                    SoftActionButton(title: "登入", isEnabled: appModel.canLogin) {
-                        appModel.login()
+                    SoftActionButton(
+                        title: appModel.isAuthenticating
+                            ? appModel.authEntryMode.loadingTitle
+                            : appModel.authEntryMode.primaryActionTitle,
+                        isEnabled: appModel.canSubmitAuthForm
+                    ) {
+                        appModel.submitAuthForm()
                     }
                     .padding(.top, 10)
+
+                    if appModel.isAuthenticating {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                        .padding(.top, 4)
+                    }
+
+                    HStack(spacing: 4) {
+                        Spacer()
+
+                        Text(appModel.authEntryMode.secondaryPrompt)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(.black.opacity(0.75))
+
+                        Button(appModel.authEntryMode.secondaryActionTitle) {
+                            appModel.switchAuthEntryMode()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(FigmaPalette.hotPink)
+                        .disabled(appModel.isAuthenticating)
+                        .opacity(appModel.isAuthenticating ? 0.45 : 1)
+
+                        Spacer()
+                    }
+                    .padding(.top, 6)
                 }
                 .padding(.horizontal, 54)
                 .padding(.bottom, 40)
@@ -1440,6 +2572,8 @@ private struct EmailLoginScreen: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
+                .disabled(appModel.isAuthenticating)
+                .opacity(appModel.isAuthenticating ? 0.45 : 1)
 
                 Spacer()
             }
@@ -1465,9 +2599,11 @@ private struct HomeScreen: View {
 
                             Spacer()
 
-                            Image(systemName: "bell.fill")
-                                .font(.system(size: 30, weight: .bold))
-                                .foregroundColor(.black)
+                            NotificationBellButton(
+                                unreadCount: appModel.unreadNotificationCount,
+                                size: 30,
+                                action: appModel.openNotifications
+                            )
                         }
 
                         Text("每一次，\n都為您打造完美花束")
@@ -1625,7 +2761,7 @@ private struct BrowseScreen: View {
                     Spacer()
 
                     Button {
-                        appModel.openCustomBouquetFlow(from: .browse)
+                        appModel.openDirectDIYFlow(from: .browse)
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "wand.and.stars")
@@ -1689,7 +2825,7 @@ private struct MaterialsPane: View {
                         appModel.selectedFlowerCategory = nil
                     }
 
-                    ForEach(FlowerCategory.allCases, id: \.self) { category in
+                    ForEach(appModel.diyFlowerCategories, id: \.self) { category in
                         FlowerSidebarButton(
                             title: category.displayName,
                             isSelected: appModel.selectedFlowerCategory == category
@@ -1705,18 +2841,36 @@ private struct MaterialsPane: View {
             .background(FigmaPalette.softPink.opacity(0.45))
 
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 14) {
-                    ForEach(appModel.filteredFlowers) { flower in
-                        FlowerCatalogCard(
+                Group {
+                    if let stateMessage = appModel.flowerCatalogStateMessage {
+                        Text(stateMessage)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 12)
+                    } else {
+                        LazyVStack(spacing: 14) {
+                            ForEach(appModel.filteredFlowers) { flower in
+                        DIYFlowerCard(
                             flower: flower,
                             quantity: appModel.cartQuantity(for: flower),
+                            stockText: appModel.stockText(for: flower),
+                            canIncrement: appModel.canIncrementCartQuantity(for: BouquetProduct.fromFlower(flower)),
+                            canDecrement: appModel.cartQuantity(for: flower) > 0,
+                            showsRestockReminder: (appModel.availableStock(for: flower) ?? 0) == 0,
+                            isRestockReminderEnabled: appModel.isRestockReminderEnabled(for: flower),
+                            onToggleRestockReminder: {
+                                appModel.toggleRestockReminder(for: flower)
+                            },
                             onIncrement: {
                                 appModel.addFlowerToCart(flower)
                             },
                             onDecrement: {
                                 appModel.removeFlowerFromCart(flower)
+                                    }
+                                )
                             }
-                        )
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -1767,8 +2921,15 @@ private struct ClassicBouquetsPane: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: 18) {
                         ForEach(appModel.availableBouquetProducts.prefix(6)) { product in
-                            ClassicBouquetTile(product: product) {
+                            ClassicBouquetTile(
+                                product: product,
+                                stockText: appModel.stockText(for: product),
+                                isSoldOut: appModel.isSoldOut(product),
+                                isRestockReminderEnabled: appModel.isRestockReminderEnabled(for: product)
+                            ) {
                                 appModel.openProduct(product, from: .browse)
+                            } onToggleRestockReminder: {
+                                appModel.toggleRestockReminder(for: product)
                             }
                         }
                     }
@@ -1776,7 +2937,7 @@ private struct ClassicBouquetsPane: View {
                 }
 
                 DIYPromptCard {
-                    appModel.openCustomBouquetFlow(from: .browse)
+                    appModel.openDirectDIYFlow(from: .browse)
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
@@ -1806,9 +2967,11 @@ private struct ProductDetailScreen: View {
 
                         Spacer()
 
-                        Image(systemName: "bell.fill")
-                            .font(.system(size: 30, weight: .bold))
-                            .foregroundColor(.black)
+                        NotificationBellButton(
+                            unreadCount: appModel.unreadNotificationCount,
+                            size: 30,
+                            action: appModel.openNotifications
+                        )
                     }
                     .padding(.horizontal, 33)
                     .padding(.top, 22)
@@ -1843,6 +3006,8 @@ private struct ProductDetailScreen: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(!appModel.canIncrementCartQuantity(for: appModel.selectedProduct))
+                        .opacity(appModel.canIncrementCartQuantity(for: appModel.selectedProduct) ? 1 : 0.45)
                         .padding(.top, 18)
                         .padding(.trailing, 20)
 
@@ -1857,6 +3022,10 @@ private struct ProductDetailScreen: View {
 
                             Text(appModel.selectedProduct.priceText)
                                 .font(.system(size: 15, weight: .bold))
+
+                            Text(appModel.stockText(for: appModel.selectedProduct))
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.black.opacity(0.72))
 
                             VStack(spacing: 4) {
                                 ForEach(appModel.selectedProduct.descriptionLines, id: \.self) { line in
@@ -1873,12 +3042,28 @@ private struct ProductDetailScreen: View {
                     .padding(.top, 18)
 
                     VStack(spacing: 12) {
-                        SmallCapsuleButton(title: "加入購物車", filled: true) {
+                        SmallCapsuleButton(
+                            title: "加入購物車",
+                            filled: true,
+                            isEnabled: appModel.canIncrementCartQuantity(for: appModel.selectedProduct)
+                        ) {
                             appModel.addSelectedProductToCart()
                         }
 
-                        SmallCapsuleButton(title: "前往付款", filled: false) {
+                        SmallCapsuleButton(
+                            title: "前往付款",
+                            filled: false,
+                            isEnabled: appModel.canIncrementCartQuantity(for: appModel.selectedProduct)
+                        ) {
                             appModel.proceedToCheckout()
+                        }
+
+                        if appModel.isSoldOut(appModel.selectedProduct) {
+                            RestockReminderToggle(
+                                isSelected: appModel.isRestockReminderEnabled(for: appModel.selectedProduct)
+                            ) {
+                                appModel.toggleRestockReminder(for: appModel.selectedProduct)
+                            }
                         }
                     }
                     .padding(.top, 14)
@@ -1917,9 +3102,11 @@ private struct AssistantIntroScreen: View {
 
                     Spacer()
 
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundColor(.black)
+                    NotificationBellButton(
+                        unreadCount: appModel.unreadNotificationCount,
+                        size: 30,
+                        action: appModel.openNotifications
+                    )
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
@@ -1967,8 +3154,18 @@ private struct AssistantIntroScreen: View {
                             }
 
                         VStack(spacing: 12) {
-                            AssistantChoiceButton(title: "開始推薦") {
-                                appModel.openCustomBouquetFlow(from: .assistant)
+                            if appModel.hasAssistantRecommendationProgress {
+                                AssistantChoiceButton(title: "繼續上次推薦") {
+                                    appModel.openCustomBouquetFlow(from: .assistant)
+                                }
+
+                                AssistantChoiceButton(title: "重新開始推薦") {
+                                    appModel.startAssistantRecommendationFlow(from: .assistant)
+                                }
+                            } else {
+                                AssistantChoiceButton(title: "開始推薦") {
+                                    appModel.startAssistantRecommendationFlow(from: .assistant)
+                                }
                             }
                         }
                     }
@@ -1986,7 +3183,6 @@ private struct AssistantIntroScreen: View {
 
 private struct AssistantJourneyScreen: View {
     @ObservedObject var appModel: FigmaCustomerAppModel
-    @State private var visibleStep = 0
     @State private var pendingStep: Int?
     @State private var customRecipientText = ""
     @State private var customOccasionText = ""
@@ -1997,6 +3193,12 @@ private struct AssistantJourneyScreen: View {
     private let occasionOptions = ["生日", "紀念日", "畢業", "感謝"]
     private let colorOptions = ["粉色", "白綠", "紅色", "暖黃色"]
     private let budgetOptions = ["小於港幣100元", "港幣100-200元", "港幣200-300元", "港幣300元以上"]
+    private let assistantQuickPrompts = [
+        "现在有哪些花材有货？",
+        "预算 HKD 200 左右送朋友可以怎么选？",
+        "帮我推荐适合生日的花束",
+        "有哪些包装纸可以选？"
+    ]
 
     var body: some View {
         MainScreenContainer(selectedTab: appModel.activeTab, appModel: appModel) {
@@ -2040,8 +3242,11 @@ private struct AssistantJourneyScreen: View {
 
                         Spacer()
 
-                        Image(systemName: "bell.fill")
-                            .font(.system(size: 30, weight: .bold))
+                        NotificationBellButton(
+                            unreadCount: appModel.unreadNotificationCount,
+                            size: 30,
+                            action: appModel.openNotifications
+                        )
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 18)
@@ -2055,10 +3260,10 @@ private struct AssistantJourneyScreen: View {
                     .padding(.horizontal, 51)
 
                     AssistantConversationBlock(
-                        title: "你好！我是你的 AI 花藝助手。我會先整理你的需求，之後直接帶你進入 DIY 花束設計。請先選擇購買類型。",
+                        title: "你好！我是你的 AI 花藝助手。我會先整理你的需求，最後再根據真實資料庫給你推薦。請先選擇購買類型。",
                         iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                     ) {
-                        if visibleStep >= 1 {
+                        if appModel.assistantConversationStep >= 1 {
                             OptionGrid(
                                 options: purchaseTypeOptions,
                                 selection: Binding(
@@ -2075,7 +3280,7 @@ private struct AssistantJourneyScreen: View {
                         TypingIndicatorBubble()
                     }
 
-                    if visibleStep >= 2 {
+                    if appModel.assistantConversationStep >= 2 {
                         AssistantReplyBubble(text: "想找 \(appModel.selectedPurchaseType)。")
 
                         AssistantConversationBlock(
@@ -2108,7 +3313,7 @@ private struct AssistantJourneyScreen: View {
                         TypingIndicatorBubble()
                     }
 
-                    if visibleStep >= 3 {
+                    if appModel.assistantConversationStep >= 3 {
                         AssistantReplyBubble(text: "收花對象是 \(appModel.selectedRecipient)。")
 
                         AssistantConversationBlock(
@@ -2141,7 +3346,7 @@ private struct AssistantJourneyScreen: View {
                         TypingIndicatorBubble()
                     }
 
-                    if visibleStep >= 4 {
+                    if appModel.assistantConversationStep >= 4 {
                         AssistantReplyBubble(text: "送花場合是 \(appModel.selectedOccasion)。")
 
                         AssistantConversationBlock(
@@ -2174,11 +3379,11 @@ private struct AssistantJourneyScreen: View {
                         TypingIndicatorBubble()
                     }
 
-                    if visibleStep >= 5 {
+                    if appModel.assistantConversationStep >= 5 {
                         AssistantReplyBubble(text: "顏色偏好是 \(appModel.selectedColor)。")
 
                         AssistantConversationBlock(
-                            title: "最後一題，請選擇預算範圍。完成後我會直接帶你去 DIY 選花材。",
+                            title: "最後一題，請選擇預算範圍。完成後我會根據真實資料庫整理推薦。",
                             iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
                         ) {
                             OptionGrid(
@@ -2193,8 +3398,52 @@ private struct AssistantJourneyScreen: View {
                         }
                     }
 
-                    if pendingStep == 6 {
-                        TypingIndicatorBubble(text: "我先幫你整理建議，下一步直接去 DIY 花束設計...")
+                    if pendingStep == 6 || appModel.isGeneratingAssistantRecommendation {
+                        TypingIndicatorBubble(text: "我正在根據真實資料庫整理最後推薦...")
+                    }
+
+                    if appModel.assistantConversationStep >= 6 {
+                        AssistantReplyBubble(text: "預算範圍是 \(appModel.selectedBudget)。")
+
+                        AssistantConversationBlock(
+                            title: "這是我根據你剛剛的選擇，結合資料庫整理出的最後推薦。",
+                            iconURL: "https://www.figma.com/api/mcp/asset/cfec918e-6097-49d9-a4cd-2e8498f3c787"
+                        ) {
+                            VStack(spacing: 12) {
+                                if let recommendation = appModel.assistantRecommendationText {
+                                    AssistantSummaryBubble(
+                                        title: "AI 推薦",
+                                        summaryText: recommendation
+                                    )
+                                } else if let errorMessage = appModel.assistantErrorMessage {
+                                    AssistantSummaryBubble(
+                                        title: "AI 暫時不可用",
+                                        summaryText: errorMessage
+                                    )
+
+                                    AssistantRecommendationBubble(
+                                        suggestedDesign: appModel.suggestedDesignText,
+                                        recommendedFlowers: appModel.recommendedFlowerTypes,
+                                        estimatedPrice: appModel.estimatedPriceText,
+                                        browseLinkTitle: "先去 DIY 挑花材",
+                                        onOpenBrowse: appModel.proceedToDIYDesigner
+                                    )
+                                }
+
+                                HStack(spacing: 10) {
+                                    AssistantChoiceButton(title: "進入 DIY 選花") {
+                                        appModel.proceedToDIYDesigner()
+                                    }
+
+                                    AssistantChoiceButton(title: "重新選擇") {
+                                        appModel.resetAssistantSelections()
+                                        appModel.resetAssistantChat()
+                                        syncCustomInputsFromSelection()
+                                        pendingStep = nil
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Color.clear
@@ -2204,7 +3453,7 @@ private struct AssistantJourneyScreen: View {
                 .frame(maxWidth: 402)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: visibleStep) {
+            .onChange(of: appModel.assistantConversationStep) {
                 scrollToBottom(proxy)
             }
             .onChange(of: pendingStep) {
@@ -2212,9 +3461,9 @@ private struct AssistantJourneyScreen: View {
             }
             .task {
                 syncCustomInputsFromSelection()
-                if visibleStep == 0 {
+                if appModel.assistantConversationStep < 1 {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        visibleStep = 1
+                        appModel.assistantConversationStep = 1
                     }
                 }
             }
@@ -2295,18 +3544,25 @@ private struct AssistantJourneyScreen: View {
     private func chooseBudget(_ option: String) {
         appModel.selectedBudget = option
         pendingStep = 6
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            pendingStep = nil
-            appModel.proceedToDIYDesigner()
+        appModel.clearAssistantRecommendation()
+        Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            await appModel.generateAssistantRecommendation()
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    appModel.assistantConversationStep = 6
+                }
+                pendingStep = nil
+            }
         }
     }
 
     private func reveal(step: Int) {
-        guard visibleStep < step else { return }
+        guard appModel.assistantConversationStep < step else { return }
         pendingStep = step
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             withAnimation(.easeInOut(duration: 0.25)) {
-                visibleStep = step
+                appModel.assistantConversationStep = step
             }
             pendingStep = nil
         }
@@ -2334,8 +3590,11 @@ private struct CartScreen: View {
 
                         Spacer()
 
-                        Image(systemName: "bell.fill")
-                            .font(.system(size: 28, weight: .bold))
+                        NotificationBellButton(
+                            unreadCount: appModel.unreadNotificationCount,
+                            size: 28,
+                            action: appModel.openNotifications
+                        )
                     }
                     .padding(.top, 18)
 
@@ -2351,6 +3610,8 @@ private struct CartScreen: View {
                             ForEach(appModel.cartItems) { item in
                                 CartItemCard(
                                     item: item,
+                                    stockText: appModel.stockText(for: item.product),
+                                    canIncrement: appModel.canIncrementCartQuantity(for: item.product),
                                     onIncrement: {
                                         appModel.addProductToCart(item.product)
                                     },
@@ -2414,6 +3675,8 @@ private struct CheckoutScreen: View {
                         subtitle: nil,
                         showBack: true,
                         showBell: true,
+                        unreadNotificationCount: appModel.unreadNotificationCount,
+                        onBellTap: appModel.openNotifications,
                         onBack: appModel.dismissCheckout
                     )
                     .padding(.top, 18)
@@ -2547,6 +3810,8 @@ private struct CheckoutSummaryCard: View {
                                     onDecrement: {
                                         appModel.removeProductFromCart(primaryItem.product)
                                     },
+                                    canIncrement: appModel.canIncrementCartQuantity(for: primaryItem.product),
+                                    canDecrement: primaryItem.quantity > 0,
                                     style: .compact
                                 )
                             } else {
@@ -2559,6 +3824,11 @@ private struct CheckoutSummaryCard: View {
                             VStack(alignment: .trailing, spacing: 3) {
                                 Text(appModel.cartTotalPriceText)
                                     .font(.system(size: 18, weight: .bold))
+                                if let primaryItem = appModel.checkoutPrimaryItem {
+                                    Text(appModel.stockText(for: primaryItem.product))
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(.black.opacity(0.65))
+                                }
                                 Text("點擊展開價格明細")
                                     .font(.system(size: 8, weight: .bold))
                                     .foregroundColor(.secondary)
@@ -2715,8 +3985,11 @@ private struct OrderTrackingScreen: View {
 
                                 Spacer()
 
-                                Image(systemName: "bell.fill")
-                                    .font(.system(size: 30, weight: .bold))
+                                NotificationBellButton(
+                                    unreadCount: appModel.unreadNotificationCount,
+                                    size: 30,
+                                    action: appModel.openNotifications
+                                )
                             }
 
                             Text("下單成功!!!")
@@ -2945,7 +4218,7 @@ private struct ProfileScreen: View {
                                 .frame(width: 39, height: 39)
                             }
 
-                            Text("QQ Lee")
+                            Text(appModel.profileDisplayName)
                                 .font(.system(size: 13, weight: .regular))
                         }
 
@@ -2971,8 +4244,8 @@ private struct ProfileScreen: View {
                     .frame(maxWidth: .infinity)
 
                     VStack(alignment: .leading, spacing: 20) {
-                        ProfileInfoRow(title: "電郵", value: "QQQQLee@email.com")
-                        ProfileInfoRow(title: "電話號碼", value: "+852 12345678")
+                        ProfileInfoRow(title: "電郵", value: appModel.profileEmailText)
+                        ProfileInfoRow(title: "電話號碼", value: appModel.profilePhoneText)
 
                         VStack(alignment: .leading, spacing: 12) {
                             Text("我的訂單")
@@ -2990,6 +4263,32 @@ private struct ProfileScreen: View {
                             ProfileDetailLine(icon: "💬", title: "聯絡店舖", subtitle: nil)
                             ProfileDetailLine(icon: "❓", title: "常見問題", subtitle: "關於訂單與送貨的常見問題。")
                         }
+
+                        Button {
+                            appModel.logout()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    .font(.system(size: 15, weight: .bold))
+
+                                Text("登出帳戶")
+                                    .font(.system(size: 14, weight: .bold))
+                            }
+                            .foregroundColor(FigmaPalette.hotPink)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.white)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(FigmaPalette.hotPink.opacity(0.35), lineWidth: 1)
+                            )
+                            .shadow(color: FigmaPalette.softPink.opacity(0.45), radius: 8, x: 0, y: 4)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
                     }
                 }
                 .padding(.horizontal, 32)
@@ -3082,12 +4381,62 @@ private struct MainScreenContainer<Content: View>: View {
     }
 }
 
+private struct NotificationBellIcon: View {
+    let unreadCount: Int
+    var size: CGFloat = 30
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: size, weight: .bold))
+                .foregroundColor(.black)
+
+            if unreadCount > 0 {
+                Text(unreadBadgeText)
+                    .font(.system(size: max(9, size * 0.28), weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(minWidth: max(16, size * 0.5), minHeight: max(16, size * 0.5))
+                    .padding(.horizontal, unreadCount > 9 ? 4 : 0)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.black)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.white, lineWidth: 1.2)
+                    )
+                    .offset(x: size * 0.14, y: -size * 0.12)
+            }
+        }
+        .frame(width: size + 6, height: size + 4, alignment: .center)
+    }
+
+    private var unreadBadgeText: String {
+        unreadCount > 99 ? "99+" : "\(unreadCount)"
+    }
+}
+
+private struct NotificationBellButton: View {
+    let unreadCount: Int
+    var size: CGFloat = 30
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            NotificationBellIcon(unreadCount: unreadCount, size: size)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct FigmaHeader: View {
     let brand: String
     let title: String
     let subtitle: String?
     let showBack: Bool
     let showBell: Bool
+    var unreadNotificationCount = 0
+    var onBellTap: (() -> Void)? = nil
     let onBack: () -> Void
 
     var body: some View {
@@ -3106,8 +4455,11 @@ private struct FigmaHeader: View {
                 Spacer()
 
                 if showBell {
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 30, weight: .bold))
+                    NotificationBellButton(
+                        unreadCount: unreadNotificationCount,
+                        size: 30,
+                        action: onBellTap ?? {}
+                    )
                 }
             }
 
@@ -3343,36 +4695,52 @@ private struct ClassicBouquetCard: View {
 
 private struct ClassicBouquetTile: View {
     let product: BouquetProduct
+    let stockText: String
+    let isSoldOut: Bool
+    let isRestockReminderEnabled: Bool
     let action: () -> Void
+    let onToggleRestockReminder: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 34, style: .continuous)
-                        .fill(FigmaPalette.softPink.opacity(0.55))
-                        .frame(height: 164)
+        VStack(spacing: 10) {
+            Button(action: action) {
+                VStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .fill(FigmaPalette.softPink.opacity(0.55))
+                            .frame(height: 164)
 
-                    RemoteAssetImage(
-                        urlString: product.imageURL,
-                        fallbackSystemName: "gift.fill",
-                        contentMode: .fit
-                    )
-                    .padding(18)
-                    .frame(height: 146)
-                }
+                        RemoteAssetImage(
+                            urlString: product.imageURL,
+                            fallbackSystemName: "gift.fill",
+                            contentMode: .fit
+                        )
+                        .padding(18)
+                        .frame(height: 146)
+                    }
 
-                VStack(spacing: 4) {
-                    Text(product.name)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.black)
-                    Text(product.priceText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.black.opacity(0.72))
+                    VStack(spacing: 4) {
+                        Text(product.name)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.black)
+                        Text(product.priceText)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.black.opacity(0.72))
+                        Text(stockText)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(isSoldOut ? .red.opacity(0.82) : .black.opacity(0.6))
+                    }
                 }
             }
+            .buttonStyle(.plain)
+
+            if isSoldOut {
+                RestockReminderToggle(
+                    isSelected: isRestockReminderEnabled,
+                    action: onToggleRestockReminder
+                )
+            }
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -3431,6 +4799,26 @@ private struct AssistantChoiceButton: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.black)
                 }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct AssistantPromptChip: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.black)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(FigmaPalette.softPink.opacity(0.85))
+                )
         }
         .buttonStyle(.plain)
     }
@@ -3752,12 +5140,23 @@ struct BouquetWrappingOption: Identifiable, Equatable {
     let name: String
     let imageURL: String
     let price: Double
+    let stockQuantity: Int?
+    let inventoryCode: String?
     
-    init(id: String, name: String, imageURL: String, price: Double) {
+    init(
+        id: String,
+        name: String,
+        imageURL: String,
+        price: Double,
+        stockQuantity: Int? = nil,
+        inventoryCode: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.imageURL = imageURL
         self.price = price
+        self.stockQuantity = stockQuantity
+        self.inventoryCode = inventoryCode
     }
     
     init(_ data: StorefrontWrappingOptionData) {
@@ -3765,6 +5164,8 @@ struct BouquetWrappingOption: Identifiable, Equatable {
         self.name = data.name
         self.imageURL = data.imageURL
         self.price = data.price
+        self.stockQuantity = data.stockQuantity
+        self.inventoryCode = data.inventoryCode
     }
     
     var hasReferenceImage: Bool {
@@ -3803,7 +5204,11 @@ private struct DIYBouquetDesignContent: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                DIYFlowHeader(onBack: appModel.closeOverlay)
+                DIYFlowHeader(
+                    unreadNotificationCount: appModel.unreadNotificationCount,
+                    onBellTap: appModel.openNotifications,
+                    onBack: appModel.closeOverlay
+                )
                 DIYProgressSection(
                     step: step,
                     priceText: "HKD \(Int(appModel.diyTotalPrice.rounded()))",
@@ -3851,8 +5256,8 @@ private struct DIYBouquetDesignContent: View {
         VStack(alignment: .leading, spacing: 16) {
             DIYAssistantSummaryCard(
                 title: "AI 摘要",
-                subtitle: appModel.suggestedDesignText,
-                detail: "建議花材：\(appModel.recommendedFlowerTypes.joined(separator: "、"))"
+                subtitle: appModel.diyAssistantSummaryText,
+                detail: appModel.diyAssistantSummaryDetail
             )
 
             HStack(alignment: .top, spacing: 14) {
@@ -3879,6 +5284,14 @@ private struct DIYBouquetDesignContent: View {
                         DIYFlowerCard(
                             flower: flower,
                             quantity: appModel.quantity(for: flower),
+                            stockText: appModel.stockText(for: flower),
+                            canIncrement: appModel.canIncrementDIYQuantity(for: flower),
+                            canDecrement: appModel.quantity(for: flower) > 0,
+                            showsRestockReminder: (appModel.availableStock(for: flower) ?? 0) == 0,
+                            isRestockReminderEnabled: appModel.isRestockReminderEnabled(for: flower),
+                            onToggleRestockReminder: {
+                                appModel.toggleRestockReminder(for: flower)
+                            },
                             onIncrement: {
                                 appModel.increaseFlowerQuantity(flower)
                             },
@@ -3907,8 +5320,17 @@ private struct DIYBouquetDesignContent: View {
                         DIYWrappingOptionCard(
                             option: option,
                             isSelected: appModel.selectedWrappingOptionID == option.id,
+                            stockText: appModel.stockText(for: option),
+                            canIncrement: appModel.canSelectWrappingOption(option),
+                            showsRestockReminder: (appModel.availableStock(for: option) ?? 0) == 0,
+                            isRestockReminderEnabled: appModel.isRestockReminderEnabled(for: option),
+                            onToggleRestockReminder: {
+                                appModel.toggleRestockReminder(for: option)
+                            },
                             onIncrement: {
-                                appModel.selectedWrappingOptionID = option.id
+                                if appModel.canSelectWrappingOption(option) {
+                                    appModel.selectedWrappingOptionID = option.id
+                                }
                             },
                             onDecrement: {
                                 if appModel.selectedWrappingOptionID == option.id {
@@ -4141,7 +5563,10 @@ private struct DIYBouquetPreviewContent: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                DIYFlowHeader {
+                DIYFlowHeader(
+                    unreadNotificationCount: appModel.unreadNotificationCount,
+                    onBellTap: appModel.openNotifications
+                ) {
                     appModel.closeOverlay()
                 }
 
@@ -4313,6 +5738,8 @@ private struct DIYBouquetPreviewContent: View {
 }
 
 private struct DIYFlowHeader: View {
+    let unreadNotificationCount: Int
+    let onBellTap: () -> Void
     let onBack: () -> Void
 
     var body: some View {
@@ -4327,9 +5754,11 @@ private struct DIYFlowHeader: View {
 
             Spacer()
 
-            Image(systemName: "bell.fill")
-                .font(.system(size: 30, weight: .bold))
-                .foregroundColor(.black)
+            NotificationBellButton(
+                unreadCount: unreadNotificationCount,
+                size: 30,
+                action: onBellTap
+            )
         }
         .overlay(alignment: .leading) {
             VStack(alignment: .leading, spacing: 2) {
@@ -4421,7 +5850,7 @@ private struct DIYProgressSection: View {
 private struct DIYAssistantSummaryCard: View {
     let title: String
     let subtitle: String
-    let detail: String
+    let detail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -4429,9 +5858,11 @@ private struct DIYAssistantSummaryCard: View {
                 .font(.system(size: 14, weight: .bold))
             Text(subtitle)
                 .font(.system(size: 13, weight: .medium))
-            Text(detail)
-                .font(.system(size: 12, weight: .regular))
-                .foregroundColor(.secondary)
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4445,6 +5876,12 @@ private struct DIYAssistantSummaryCard: View {
 private struct DIYFlowerCard: View {
     let flower: Flower
     let quantity: Int
+    let stockText: String
+    var canIncrement = true
+    var canDecrement = true
+    var showsRestockReminder = false
+    var isRestockReminderEnabled = false
+    var onToggleRestockReminder: (() -> Void)?
     let onIncrement: () -> Void
     let onDecrement: () -> Void
 
@@ -4470,13 +5907,24 @@ private struct DIYFlowerCard: View {
                         .foregroundColor(.black)
                 }
 
-                if let stockQuantity = flower.stockQuantity {
-                    Text("剩餘\(stockQuantity)\(flower.unitDisplayName)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.black)
-                }
+                Text(stockText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black)
 
-                DIYMiniStepper(quantity: quantity, onIncrement: onIncrement, onDecrement: onDecrement)
+                if showsRestockReminder, let onToggleRestockReminder {
+                    RestockReminderToggle(
+                        isSelected: isRestockReminderEnabled,
+                        action: onToggleRestockReminder
+                    )
+                } else {
+                    DIYMiniStepper(
+                        quantity: quantity,
+                        canIncrement: canIncrement,
+                        canDecrement: canDecrement,
+                        onIncrement: onIncrement,
+                        onDecrement: onDecrement
+                    )
+                }
             }
         }
         .padding(14)
@@ -4523,6 +5971,11 @@ private struct DIYFlowerCard: View {
 private struct DIYWrappingOptionCard: View {
     let option: BouquetWrappingOption
     let isSelected: Bool
+    let stockText: String
+    let canIncrement: Bool
+    var showsRestockReminder = false
+    var isRestockReminderEnabled = false
+    var onToggleRestockReminder: (() -> Void)?
     let onIncrement: () -> Void
     let onDecrement: () -> Void
 
@@ -4539,11 +5992,24 @@ private struct DIYWrappingOptionCard: View {
             Text(option.name)
                 .font(.system(size: 14, weight: .bold))
 
-            DIYMiniStepper(
-                quantity: isSelected ? 1 : 0,
-                onIncrement: onIncrement,
-                onDecrement: onDecrement
-            )
+            Text(stockText)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.black.opacity(0.68))
+
+            if showsRestockReminder, let onToggleRestockReminder {
+                RestockReminderToggle(
+                    isSelected: isRestockReminderEnabled,
+                    action: onToggleRestockReminder
+                )
+            } else {
+                DIYMiniStepper(
+                    quantity: isSelected ? 1 : 0,
+                    canIncrement: canIncrement,
+                    canDecrement: isSelected,
+                    onIncrement: onIncrement,
+                    onDecrement: onDecrement
+                )
+            }
         }
         .padding(12)
         .background(
@@ -4557,8 +6023,41 @@ private struct DIYWrappingOptionCard: View {
     }
 }
 
+private struct RestockReminderToggle: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text("到貨提醒")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.black)
+
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(FigmaPalette.hotPink)
+            }
+            .padding(.horizontal, 18)
+            .frame(height: 31)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 0.8)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct DIYMiniStepper: View {
     let quantity: Int
+    var canIncrement = true
+    var canDecrement = true
     let onIncrement: () -> Void
     let onDecrement: () -> Void
 
@@ -4571,6 +6070,8 @@ private struct DIYMiniStepper: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
+            .disabled(!canDecrement)
+            .opacity(canDecrement ? 1 : 0.3)
 
             Text("\(quantity)")
                 .font(.system(size: 13, weight: .medium))
@@ -4584,6 +6085,8 @@ private struct DIYMiniStepper: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
+            .disabled(!canIncrement)
+            .opacity(canIncrement ? 1 : 0.3)
         }
     }
 }
@@ -4999,6 +6502,8 @@ private struct EmptyCartCard: View {
 
 private struct CartItemCard: View {
     let item: CartItem
+    let stockText: String
+    let canIncrement: Bool
     let onIncrement: () -> Void
     let onDecrement: () -> Void
 
@@ -5027,10 +6532,16 @@ private struct CartItemCard: View {
                 Text(item.product.priceText)
                     .font(.system(size: 17, weight: .bold))
 
+                Text(stockText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black.opacity(0.65))
+
                 QuantityControl(
                     quantity: item.quantity,
                     onIncrement: onIncrement,
                     onDecrement: onDecrement,
+                    canIncrement: canIncrement,
+                    canDecrement: item.quantity > 0,
                     style: .compact
                 )
             }
@@ -5058,6 +6569,8 @@ private struct QuantityControl: View {
     let quantity: Int
     let onIncrement: () -> Void
     let onDecrement: () -> Void
+    var canIncrement = true
+    var canDecrement = true
     var style: Style = .regular
     var collapsedWhenZero = false
 
@@ -5075,16 +6588,18 @@ private struct QuantityControl: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .disabled(!canIncrement)
+                .opacity(canIncrement ? 1 : 0.45)
             } else {
                 HStack(spacing: style == .regular ? 6 : 6) {
-                    quantityButton(symbol: "minus", action: onDecrement, isEnabled: quantity > 0)
+                    quantityButton(symbol: "minus", action: onDecrement, isEnabled: quantity > 0 && canDecrement)
 
                     Text("\(quantity)")
                         .font(.system(size: style == .regular ? 13 : 12, weight: .bold))
                         .foregroundColor(.black)
                         .frame(minWidth: style == .regular ? 16 : 14)
 
-                    quantityButton(symbol: "plus", action: onIncrement, isEnabled: true)
+                    quantityButton(symbol: "plus", action: onIncrement, isEnabled: canIncrement)
                 }
                 .padding(.horizontal, style == .regular ? 8 : 7)
                 .frame(height: style == .regular ? 30 : 28)
@@ -5208,24 +6723,30 @@ private struct SoftActionButton: View {
 private struct SmallCapsuleButton: View {
     let title: String
     let filled: Bool
+    var isEnabled = true
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Capsule(style: .continuous)
-                .fill(filled ? Color.black : Color.white)
+                .fill(filled ? (isEnabled ? Color.black : Color.black.opacity(0.2)) : Color.white)
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(Color.black, lineWidth: filled ? 0 : 1)
+                        .stroke(isEnabled ? Color.black : Color.black.opacity(0.2), lineWidth: filled ? 0 : 1)
                 )
                 .frame(width: 97, height: 24)
                 .overlay {
                     Text(title)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(filled ? .white : .black)
+                        .foregroundColor(
+                            filled
+                                ? (isEnabled ? .white : .white.opacity(0.75))
+                                : (isEnabled ? .black : .black.opacity(0.3))
+                        )
                 }
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
     }
 }
 

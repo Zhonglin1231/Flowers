@@ -34,6 +34,61 @@ class FirebaseManager: ObservableObject {
             self?.isAuthenticated = user != nil
         }
     }
+
+    func signOut() throws {
+        try auth.signOut()
+    }
+
+    var hasAuthenticatedUser: Bool {
+        auth.currentUser != nil
+    }
+
+    var authenticatedEmail: String? {
+        auth.currentUser?.email
+    }
+
+    var authenticatedPhoneNumber: String? {
+        auth.currentUser?.phoneNumber
+    }
+
+    func register(email: String, password: String) async throws {
+        let result = try await auth.createUser(withEmail: email, password: password)
+        do {
+            try await upsertUserRecord(for: result.user, fallbackEmail: email, isNewUser: true)
+        } catch {
+            try? auth.signOut()
+            throw error
+        }
+    }
+
+    func login(email: String, password: String) async throws {
+        let result = try await auth.signIn(withEmail: email, password: password)
+        do {
+            try await upsertUserRecord(for: result.user, fallbackEmail: email, isNewUser: false)
+        } catch {
+            try? auth.signOut()
+            throw error
+        }
+    }
+
+    private func upsertUserRecord(for user: User, fallbackEmail: String, isNewUser: Bool) async throws {
+        var data: [String: Any] = [
+            "uid": user.uid,
+            "email": user.email ?? fallbackEmail,
+            "updatedAt": FieldValue.serverTimestamp(),
+            "lastLoginAt": FieldValue.serverTimestamp()
+        ]
+
+        if let phoneNumber = user.phoneNumber, !phoneNumber.isEmpty {
+            data["phoneNumber"] = phoneNumber
+        }
+
+        if isNewUser {
+            data["createdAt"] = FieldValue.serverTimestamp()
+        }
+
+        try await db.collection("users").document(user.uid).setData(data, merge: true)
+    }
 }
 
 // MARK: - Firestore 数据模型（可编码）
@@ -90,7 +145,7 @@ struct FlowerData: Identifiable {
     }
     
     var resolvedId: String {
-        id ?? documentID ?? UUID().uuidString
+        documentID ?? id ?? UUID().uuidString
     }
     
     var resolvedCategory: FlowerCategory {
@@ -156,7 +211,7 @@ struct FlowerData: Identifiable {
 }
 
 /// 花束项数据模型
-struct BouquetItemData: Codable {
+struct BouquetItemData: Codable, Hashable {
     let flowerId: String
     let flowerName: String
     let flowerEmoji: String
