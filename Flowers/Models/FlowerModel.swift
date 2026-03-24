@@ -223,6 +223,7 @@ enum OrderStatus: String {
     case preparing = "制作中"
     case ready = "已完成"
     case delivered = "已送达"
+    case cancelled = "已取消"
 }
 
 // MARK: - 示例数据

@@ -383,7 +383,11 @@ class OrderService: ObservableObject {
     
     // MARK: - 取消订单
     func cancelOrder(orderId: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        db.collection("orders").document(orderId).delete { error in
+        db.collection("orders").document(orderId).updateData([
+            "status": OrderStatus.cancelled.rawValue,
+            "refundStatus": "退款已原路返回",
+            "cancelledAt": Timestamp(date: Date())
+        ]) { error in
             if let error = error {
                 completion(.failure(error))
             } else {

@@ -223,6 +223,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published private(set) var userOrders: [OrderData] = []
     @Published private(set) var isLoadingUserOrders = false
     @Published private(set) var userOrdersErrorMessage: String?
+    @Published private(set) var cancellingOrderID: String?
     @Published var profileRecord: UserProfileRecord?
     @Published var isLoadingProfile = false
     @Published var isSavingProfile = false
@@ -872,6 +873,38 @@ final class FigmaCustomerAppModel: ObservableObject {
         activeTab = .profile
         refreshUserOrders()
         overlayScreen = .orderHistory
+    }
+
+    func canCancelOrder(_ order: OrderData) -> Bool {
+        guard let orderID = order.id else { return false }
+        return order.status == OrderStatus.pending.rawValue && cancellingOrderID != orderID
+    }
+
+    func cancelPendingOrder(_ order: OrderData) {
+        guard order.status == OrderStatus.pending.rawValue,
+              let orderID = order.id else {
+            return
+        }
+
+        cancellingOrderID = orderID
+        userOrdersErrorMessage = nil
+
+        orderService.cancelOrder(orderId: orderID) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.cancellingOrderID = nil
+
+                switch result {
+                case .success:
+                    if let index = self.userOrders.firstIndex(where: { $0.id == orderID }) {
+                        self.userOrders[index].status = OrderStatus.cancelled.rawValue
+                    }
+                    self.refreshUserOrders()
+                case .failure(let error):
+                    self.userOrdersErrorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     func openProfileEditor() {
@@ -4652,7 +4685,7 @@ private struct OrderHistoryScreen: View {
                             .foregroundColor(.secondary)
 
                         ForEach(Array(appModel.userOrders.enumerated()), id: \.offset) { _, order in
-                            OrderHistoryCard(order: order)
+                            OrderHistoryCard(order: order, appModel: appModel)
                         }
                     }
                 }
@@ -4667,6 +4700,7 @@ private struct OrderHistoryScreen: View {
 
 private struct OrderHistoryCard: View {
     let order: OrderData
+    @ObservedObject var appModel: FigmaCustomerAppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4719,6 +4753,42 @@ private struct OrderHistoryCard: View {
                             .foregroundColor(.secondary)
                     }
                 }
+            }
+
+            if order.status == OrderStatus.cancelled.rawValue {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.uturn.backward.circle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Color(red: 0.13, green: 0.31, blue: 0.67))
+                    Text("退款已原路返回")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(Color(red: 0.13, green: 0.31, blue: 0.67))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(red: 0.87, green: 0.92, blue: 1.0))
+                )
+            } else if appModel.canCancelOrder(order) {
+                Button {
+                    appModel.cancelPendingOrder(order)
+                } label: {
+                    HStack(spacing: 8) {
+                        if appModel.cancellingOrderID == order.id {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text(appModel.cancellingOrderID == order.id ? "取消中..." : "取消訂單")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                }
+                .buttonStyle(.bordered)
+                .tint(Color(red: 0.70, green: 0.34, blue: 0.51))
+                .disabled(appModel.cancellingOrderID == order.id)
             }
 
             if !order.specialRequests.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -5080,6 +5150,8 @@ private struct OrderStatusBadge: View {
             return Color(red: 0.14, green: 0.40, blue: 0.31)
         case OrderStatus.ready.rawValue, OrderStatus.delivered.rawValue:
             return Color(red: 0.13, green: 0.31, blue: 0.67)
+        case OrderStatus.cancelled.rawValue:
+            return Color(red: 0.45, green: 0.29, blue: 0.29)
         default:
             return .black
         }
@@ -5093,6 +5165,8 @@ private struct OrderStatusBadge: View {
             return Color(red: 0.86, green: 0.96, blue: 0.90)
         case OrderStatus.ready.rawValue, OrderStatus.delivered.rawValue:
             return Color(red: 0.87, green: 0.92, blue: 1.0)
+        case OrderStatus.cancelled.rawValue:
+            return Color(red: 0.97, green: 0.90, blue: 0.90)
         default:
             return Color.gray.opacity(0.15)
         }
