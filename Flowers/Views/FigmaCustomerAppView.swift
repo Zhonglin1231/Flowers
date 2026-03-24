@@ -178,6 +178,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var email = ""
     @Published var password = ""
     @Published var selectedProduct = BouquetProduct.defaultSelection
+    @Published private var featuredBouquetIndex = 0
     @Published var cartItems: [CartItem] = []
     @Published var browseMode: BrowseMode = .materials
     @Published var selectedFlowerCategory: FlowerCategory?
@@ -345,7 +346,9 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
     
     var featuredBouquetProduct: BouquetProduct? {
-        availableBouquetProducts.first
+        guard !availableBouquetProducts.isEmpty else { return nil }
+        let safeIndex = max(0, featuredBouquetIndex) % availableBouquetProducts.count
+        return availableBouquetProducts[safeIndex]
     }
     
     var promotionalBouquetProduct: BouquetProduct? {
@@ -978,6 +981,17 @@ final class FigmaCustomerAppModel: ObservableObject {
         openProduct(featuredBouquetProduct, from: .home)
     }
 
+    func showNextFeaturedProduct() {
+        guard !availableBouquetProducts.isEmpty else { return }
+        featuredBouquetIndex = (featuredBouquetIndex + 1) % availableBouquetProducts.count
+    }
+
+    func showPreviousFeaturedProduct() {
+        guard !availableBouquetProducts.isEmpty else { return }
+        let total = availableBouquetProducts.count
+        featuredBouquetIndex = (featuredBouquetIndex - 1 + total) % total
+    }
+
     func addFlowerToCart(_ flower: Flower) {
         addProductToCart(BouquetProduct.fromFlower(flower))
     }
@@ -1589,6 +1603,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         profileDraftEmail = ""
         profileDraftPhone = ""
         selectedProduct = BouquetProduct.defaultSelection
+        featuredBouquetIndex = 0
         cartItems = []
         browseMode = .materials
         selectedFlowerCategory = nil
@@ -1632,6 +1647,12 @@ final class FigmaCustomerAppModel: ObservableObject {
         let resolvedCatalog = hasResolvedRemoteBouquets ? remoteProducts : []
 
         availableBouquetProducts = resolvedCatalog
+
+        if resolvedCatalog.isEmpty {
+            featuredBouquetIndex = 0
+        } else {
+            featuredBouquetIndex = featuredBouquetIndex % resolvedCatalog.count
+        }
 
         if let firstProduct = resolvedCatalog.first,
            !resolvedCatalog.contains(where: { $0.id == selectedProduct.id }) {
@@ -2777,6 +2798,7 @@ private struct EmailLoginScreen: View {
 
 private struct HomeScreen: View {
     @ObservedObject var appModel: FigmaCustomerAppModel
+    private let featuredAutoplayTimer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
 
     var body: some View {
         MainScreenContainer(selectedTab: .home, appModel: appModel) {
@@ -2862,54 +2884,75 @@ private struct HomeScreen: View {
                     }
 
                     if let featuredProduct = appModel.featuredBouquetProduct {
-                        Button {
-                            appModel.browseFeaturedProduct()
-                        } label: {
-                            ZStack(alignment: .topLeading) {
-                                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                                    .fill(FigmaPalette.softPink)
+                        ZStack(alignment: .topLeading) {
+                            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                                .fill(FigmaPalette.softPink)
 
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text("本月精選花束")
-                                        .font(.system(size: 16, weight: .bold))
-                                        .padding(.top, 24)
-                                        .padding(.leading, 23)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("本月精選花束")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .padding(.top, 24)
+                                    .padding(.leading, 23)
 
-                                    HStack {
-                                        Spacer()
-
-                                        RemoteAssetImage(
-                                            urlString: featuredProduct.imageURL,
-                                            fallbackSystemName: "gift.fill",
-                                            contentMode: .fit
-                                        )
-                                        .frame(width: 124, height: 143)
-                                        .padding(.top, 8)
-
-                                        Spacer()
-
-                                        Image(systemName: "chevron.right")
-                                            .font(.system(size: 24, weight: .bold))
-                                            .foregroundColor(.white)
-                                            .padding(.trailing, 18)
-                                    }
-
+                                HStack {
                                     Spacer()
 
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(featuredProduct.name)
-                                            .font(.system(size: 14, weight: .regular))
-                                        Text(([featuredProduct.tagline] + Array(featuredProduct.descriptionLines.prefix(2))).joined(separator: "\n"))
-                                            .font(.system(size: 10, weight: .regular))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    .padding(.leading, 23)
-                                    .padding(.bottom, 20)
+                                    RemoteAssetImage(
+                                        urlString: featuredProduct.imageURL,
+                                        fallbackSystemName: "gift.fill",
+                                        contentMode: .fit
+                                    )
+                                    .frame(width: 124, height: 143)
+                                    .padding(.top, 8)
+
+                                    Spacer()
                                 }
+
+                                Spacer()
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(featuredProduct.name)
+                                        .font(.system(size: 14, weight: .regular))
+                                    Text(([featuredProduct.tagline] + Array(featuredProduct.descriptionLines.prefix(2))).joined(separator: "\n"))
+                                        .font(.system(size: 10, weight: .regular))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .padding(.leading, 23)
+                                .padding(.bottom, 20)
                             }
-                            .frame(height: 242)
+
+                            HStack(spacing: 0) {
+                                Button {
+                                    appModel.showPreviousFeaturedProduct()
+                                } label: {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 24, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .frame(width: 56, height: 242)
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    appModel.browseFeaturedProduct()
+                                } label: {
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                                Button {
+                                    appModel.showNextFeaturedProduct()
+                                } label: {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 24, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .frame(width: 56, height: 242)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .frame(height: 242)
                     }
                 }
                 .padding(.horizontal, 29)
@@ -2918,6 +2961,9 @@ private struct HomeScreen: View {
                 .frame(maxWidth: 402)
                 .frame(maxWidth: .infinity)
             }
+        }
+        .onReceive(featuredAutoplayTimer) { _ in
+            appModel.showNextFeaturedProduct()
         }
     }
 }
