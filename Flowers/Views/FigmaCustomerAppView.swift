@@ -3367,11 +3367,6 @@ private struct AssistantIntroScreen: View {
         MainScreenContainer(selectedTab: .assistant, appModel: appModel) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(FigmaPalette.palePink)
-                        .frame(width: 28, height: 28)
-
                     Spacer()
 
                     NotificationBellButton(
@@ -4781,9 +4776,7 @@ private struct ProfileScreen: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .top) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(FigmaPalette.palePink)
+                        Color.clear
                             .frame(width: 28, height: 28)
 
                         Spacer()
