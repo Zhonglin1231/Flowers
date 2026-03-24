@@ -5177,7 +5177,16 @@ private struct MainScreenContainer<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(Color.clear)
+        .overlay(alignment: .top) {
+            GeometryReader { proxy in
+                Color.white
+                    .frame(height: proxy.safeAreaInsets.top)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .ignoresSafeArea(edges: .top)
+            }
+            .allowsHitTesting(false)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             FigmaBottomNavBar(selectedTab: selectedTab) { tab in
                 appModel.selectTab(tab)
@@ -7664,7 +7673,7 @@ private struct FigmaBottomNavBar: View {
         .padding(.top, 8)
         .frame(maxWidth: 402)
         .frame(maxWidth: .infinity)
-        .background(Color.white)
+        .background(Color.clear)
     }
 
     private var leadingGroups: [[FigmaCustomerAppModel.MainTab]] {
