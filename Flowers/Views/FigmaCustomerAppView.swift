@@ -1820,12 +1820,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func availableStock(for option: BouquetWrappingOption) -> Int? {
-        if let inventoryCode = normalizedInventoryCode(option.inventoryCode),
-           let inventoryStock = inventoryStocksByCode[inventoryCode] {
-            return inventoryStock
-        }
-
-        return option.stockQuantity
+        nil
     }
 
     func availableStock(for product: BouquetProduct) -> Int? {
@@ -1862,15 +1857,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func stockText(for option: BouquetWrappingOption) -> String {
-        if let stockQuantity = availableStock(for: option) {
-            return "剩餘\(stockQuantity)款"
-        }
-
-        if hasResolvedInventory {
-            return "庫存記錄未匹配"
-        }
-
-        return "剩餘庫存待同步"
+        "供應充足"
     }
 
     func stockText(for product: BouquetProduct) -> String {
@@ -1896,8 +1883,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func canSelectWrappingOption(_ option: BouquetWrappingOption) -> Bool {
-        guard let stockQuantity = availableStock(for: option) else { return true }
-        return stockQuantity > 0
+        true
     }
 
     func isSoldOut(_ product: BouquetProduct) -> Bool {
@@ -2007,7 +1993,7 @@ final class FigmaCustomerAppModel: ObservableObject {
             guard let option = availableWrappingOptions.first(where: { $0.id == target.referenceID }) else {
                 return false
             }
-            return (availableStock(for: option) ?? 0) > 0
+            return canSelectWrappingOption(option)
         }
     }
 
@@ -6170,7 +6156,7 @@ private struct DIYBouquetDesignContent: View {
                             isSelected: appModel.selectedWrappingOptionID == option.id,
                             stockText: appModel.stockText(for: option),
                             canIncrement: appModel.canSelectWrappingOption(option),
-                            showsRestockReminder: (appModel.availableStock(for: option) ?? 0) == 0,
+                            showsRestockReminder: appModel.availableStock(for: option) == 0,
                             isRestockReminderEnabled: appModel.isRestockReminderEnabled(for: option),
                             onToggleRestockReminder: {
                                 appModel.toggleRestockReminder(for: option)
