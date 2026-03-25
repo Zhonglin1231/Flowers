@@ -6205,9 +6205,9 @@ private struct AssistantSummaryBubble: View {
                 .font(.system(size: 14, weight: .bold))
 
             if let recommendation {
-                markdownSummaryView(for: recommendation.formattedSummary)
+                MarkdownSummaryContent(text: recommendation.formattedSummary)
             } else if let summaryText {
-                markdownSummaryView(for: summaryText)
+                MarkdownSummaryContent(text: summaryText)
             }
         }
         .padding(16)
@@ -6217,21 +6217,12 @@ private struct AssistantSummaryBubble: View {
                 .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
         )
     }
+}
 
-    private func formattedBlocks(from text: String) -> [[String]] {
-        text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .components(separatedBy: "\n\n")
-            .map { block in
-                block
-                    .components(separatedBy: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            }
-            .filter { !$0.isEmpty }
-    }
+private struct MarkdownSummaryContent: View {
+    let text: String
 
-    private func markdownSummaryView(for text: String) -> some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             let blocks = formattedBlocks(from: text)
             ForEach(blocks.indices, id: \.self) { index in
@@ -6240,17 +6231,17 @@ private struct AssistantSummaryBubble: View {
         }
     }
 
-    private func blockView(for lines: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(lines.indices, id: \.self) { index in
-                paragraphView(for: lines[index])
-            }
-        }
+    private func formattedBlocks(from text: String) -> [String] {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     @ViewBuilder
-    private func paragraphView(for paragraph: String) -> some View {
-        let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func blockView(for block: String) -> some View {
+        let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let heading = markdownHeading(from: trimmed) {
             Text(heading.text)
@@ -6260,14 +6251,15 @@ private struct AssistantSummaryBubble: View {
         } else {
             Group {
                 if let attributed = try? AttributedString(
-                    markdown: paragraph,
+                    markdown: block,
                     options: AttributedString.MarkdownParsingOptions(
                         interpretedSyntax: .full
                     )
-                ) {
+                ),
+                   !String(attributed.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(attributed)
                 } else {
-                    Text(paragraph)
+                    Text(verbatim: block)
                 }
             }
             .foregroundColor(.black.opacity(0.75))
@@ -6276,10 +6268,19 @@ private struct AssistantSummaryBubble: View {
     }
 
     private func markdownHeading(from text: String) -> (level: Int, text: String)? {
-        for level in 1...6 {
+        for level in stride(from: 6, through: 1, by: -1) {
             let prefix = String(repeating: "#", count: level) + " "
             if text.hasPrefix(prefix) {
                 return (level, String(text.dropFirst(prefix.count)))
+            }
+
+            let compactPrefix = String(repeating: "#", count: level)
+            if text.hasPrefix(compactPrefix) {
+                let headingText = String(text.dropFirst(compactPrefix.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !headingText.isEmpty {
+                    return (level, headingText)
+                }
             }
         }
         return nil
@@ -7136,7 +7137,7 @@ private struct DIYAssistantSummaryCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.system(size: 14, weight: .bold))
-            Text(subtitle)
+            MarkdownSummaryContent(text: subtitle)
                 .font(.system(size: 13, weight: .medium))
             if let detail, !detail.isEmpty {
                 Text(detail)
