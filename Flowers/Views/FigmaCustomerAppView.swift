@@ -534,9 +534,9 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     var suggestedDesignText: String {
         switch selectedPurchaseType {
-        case "單枝花":
+        case "現成單枝花":
             return "以 \(selectedColor) 為主調的單枝花禮，適合送給 \(selectedRecipient) 作為 \(selectedOccasion) 心意。"
-        case "自訂":
+        case "自訂花束":
             return "為 \(selectedRecipient) 客製一款 \(selectedColor) 主調的 \(selectedOccasion) 花禮，層次感會更突出。"
         default:
             return "推薦一束送給 \(selectedRecipient) 的 \(selectedColor) \(selectedOccasion) 花束，整體包裝走精緻柔和路線。"
@@ -545,21 +545,21 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     var estimatedPriceText: String {
         switch (selectedPurchaseType, selectedBudget) {
-        case ("單枝花", "小於港幣100元"):
+        case ("現成單枝花", "小於港幣100元"):
             return "約 HKD 68-98"
-        case ("單枝花", "港幣100-200元"):
+        case ("現成單枝花", "港幣100-200元"):
             return "約 HKD 128-168"
-        case ("單枝花", "港幣200-300元"):
+        case ("現成單枝花", "港幣200-300元"):
             return "約 HKD 188-228"
-        case ("單枝花", _):
+        case ("現成單枝花", _):
             return "約 HKD 320+"
-        case ("自訂", "小於港幣100元"):
+        case ("自訂花束", "小於港幣100元"):
             return "約 HKD 108"
-        case ("自訂", "港幣100-200元"):
+        case ("自訂花束", "港幣100-200元"):
             return "約 HKD 188-218"
-        case ("自訂", "港幣200-300元"):
+        case ("自訂花束", "港幣200-300元"):
             return "約 HKD 268-298"
-        case ("自訂", _):
+        case ("自訂花束", _):
             return "約 HKD 398+"
         case (_, "小於港幣100元"):
             return "約 HKD 98"
@@ -1880,7 +1880,7 @@ final class FigmaCustomerAppModel: ObservableObject {
 
         let recommendedOfferingName: String?
         switch selectedPurchaseType {
-        case "單枝花", "自訂":
+        case "現成單枝花", "自訂花束":
             recommendedOfferingName = nil
         default:
             recommendedOfferingName = pickRecommendedBouquet()?.name
@@ -1896,7 +1896,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
 
         let nextStepHint: String
-        if selectedPurchaseType == "自訂" {
+        if selectedPurchaseType == "自訂花束" {
             nextStepHint = "如果想自己搭配，下一步可直接進入 DIY 挑選真實花材與包裝。"
         } else {
             nextStepHint = "下一步可前往真實花材與花束頁面比較款式，或直接進入 DIY 調整。"
@@ -3803,7 +3803,7 @@ private struct AssistantJourneyScreen: View {
     @State private var customColorText = ""
     @State private var recommendationTask: Task<Void, Never>?
 
-    private let purchaseTypeOptions = ["單枝花", "花束", "自訂"]
+    private let purchaseTypeOptions = ["現成單枝花", "現成花束", "自訂花束"]
     private let recipientOptions = ["伴侶", "朋友", "家人", "同事"]
     private let occasionOptions = ["生日", "紀念日", "畢業", "感謝"]
     private let colorOptions = ["粉色", "白綠", "紅色", "暖黃色"]
