@@ -110,7 +110,9 @@ struct BouquetItemCard: View {
             Text(item.flower.name)
                 .font(.caption)
                 .fontWeight(.medium)
-                .lineLimit(1)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .multilineTextAlignment(.center)
             
             // 单价
             Text("¥\(String(format: "%.0f", item.flower.price))")
@@ -144,7 +146,7 @@ struct BouquetItemCard: View {
         .padding(12)
         .background(Color(.systemGray6))
         .cornerRadius(12)
-        .frame(width: 110)
+        .frame(width: 126)
     }
 }
 

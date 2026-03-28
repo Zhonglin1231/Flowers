@@ -7190,20 +7190,24 @@ private struct DIYFlowerCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(flower.name)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.black)
-                        Text("\(flower.categoryDisplayName) · \(flower.unitDisplayName)")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(flower.name)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.black)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(flower.categoryDisplayName) · \(flower.unitDisplayName)")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
                     Text("HKD \(Int(flower.price.rounded())) / \(flower.unitDisplayName)")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.black)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(stockText)
                     .font(.system(size: 12, weight: .semibold))

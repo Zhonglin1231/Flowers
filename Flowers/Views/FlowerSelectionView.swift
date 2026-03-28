@@ -20,8 +20,7 @@ struct FlowerSelectionView: View {
                 // 花卉列表
                 ScrollView {
                     LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
+                        GridItem(.adaptive(minimum: 170, maximum: 220), spacing: 16)
                     ], spacing: 16) {
                         ForEach(viewModel.filteredFlowers) { flower in
                             FlowerCard(flower: flower) {
@@ -153,18 +152,26 @@ struct FlowerCard: View {
             Text(flower.name)
                 .font(.headline)
                 .foregroundColor(.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .multilineTextAlignment(.center)
             
             // 英文名
             Text(flower.englishName)
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .multilineTextAlignment(.center)
             
             // 价格
             Text("¥\(String(format: "%.1f", flower.price))/\(flower.unitDisplayName)")
                 .font(.subheadline)
                 .fontWeight(.semibold)
                 .foregroundColor(.pink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
             
             // 添加按钮
             Button(action: onAdd) {
@@ -185,6 +192,7 @@ struct FlowerCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 }
 
