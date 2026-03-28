@@ -454,6 +454,21 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
     }
 
+    func browseFlowerCount(for category: FlowerCategory? = nil) -> Int {
+        cartItems.reduce(0) { partial, item in
+            guard let flower = flowerForProductID(item.product.id) else { return partial }
+            guard category == nil || flower.category == category else { return partial }
+            return partial + item.quantity
+        }
+    }
+
+    func diyFlowerCount(for category: FlowerCategory) -> Int {
+        availableFlowers.reduce(0) { partial, flower in
+            guard flower.category == category else { return partial }
+            return partial + selectedFlowerQuantities[flower.id, default: 0]
+        }
+    }
+
     var selectedWrappingOption: BouquetWrappingOption? {
         availableWrappingOptions.first(where: { $0.id == selectedWrappingOptionID })
     }
@@ -1164,6 +1179,13 @@ final class FigmaCustomerAppModel: ObservableObject {
 
     func quantity(for flower: Flower) -> Int {
         selectedFlowerQuantities[flower.id, default: 0]
+    }
+
+    private func flowerForProductID(_ productID: String) -> Flower? {
+        let prefix = "flower-"
+        guard productID.hasPrefix(prefix) else { return nil }
+        let flowerID = String(productID.dropFirst(prefix.count))
+        return availableFlowers.first(where: { $0.id == flowerID })
     }
 
     func increaseFlowerQuantity(_ flower: Flower) {
@@ -3403,6 +3425,7 @@ private struct MaterialsPane: View {
                 VStack(spacing: 8) {
                     FlowerSidebarButton(
                         title: "全部",
+                        count: appModel.browseFlowerCount(),
                         isSelected: appModel.selectedFlowerCategory == nil
                     ) {
                         appModel.selectedFlowerCategory = nil
@@ -3411,6 +3434,7 @@ private struct MaterialsPane: View {
                     ForEach(appModel.diyFlowerCategories, id: \.self) { category in
                         FlowerSidebarButton(
                             title: category.displayName,
+                            count: appModel.browseFlowerCount(for: category),
                             isSelected: appModel.selectedFlowerCategory == category
                         ) {
                             appModel.selectedFlowerCategory = category
@@ -6564,6 +6588,7 @@ private struct DIYBouquetDesignContent: View {
                         ForEach(appModel.diyFlowerCategories, id: \.self) { category in
                             FlowerSidebarButton(
                                 title: category.displayName,
+                                count: appModel.diyFlowerCount(for: category),
                                 isSelected: appModel.selectedDIYFlowerCategory == category
                             ) {
                                 appModel.selectedDIYFlowerCategory = category
@@ -6893,7 +6918,7 @@ private struct DIYBouquetPreviewContent: View {
                                 }
                             } label: {
                                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.white.opacity(0.45))
+                                    .fill(Color(red: 0.18, green: 0.27, blue: 0.21))
                                     .frame(height: 38)
                                     .overlay {
                                         HStack(spacing: 8) {
@@ -6917,13 +6942,17 @@ private struct DIYBouquetPreviewContent: View {
                                 appModel.returnToConfirmStep()
                             } label: {
                                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.white.opacity(0.45))
+                                    .fill(Color.white)
                                     .frame(height: 38)
                                     .overlay {
                                         Text("編輯設計")
                                             .font(.system(size: 14, weight: .bold))
-                                            .foregroundColor(.white)
+                                            .foregroundColor(.black)
                                     }
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                                    )
                             }
                             .buttonStyle(.plain)
                         }
@@ -7691,20 +7720,39 @@ private struct FlexibleTagStack: View {
 
 private struct FlowerSidebarButton: View {
     let title: String
+    let count: Int
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 14, weight: isSelected ? .bold : .regular))
-                .foregroundColor(isSelected ? .black : .secondary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(isSelected ? Color.white : Color.clear)
-                )
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14, weight: isSelected ? .bold : .regular))
+                    .foregroundColor(isSelected ? .black : .secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(isSelected ? .black : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(isSelected ? FigmaPalette.softPink : Color.white.opacity(0.92))
+                        )
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? Color.white : Color.clear)
+            )
         }
         .buttonStyle(.plain)
     }

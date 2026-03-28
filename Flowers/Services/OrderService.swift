@@ -277,7 +277,7 @@ class OrderService: ObservableObject {
                 self?.orders = (snapshot?.documents.compactMap { doc in
                     self?.parseOrderDocument(doc)
                 } ?? [])
-                .sorted { $0.createdAt > $1.createdAt }
+                .sorted(by: Self.userOrderHistorySort)
             }
     }
     
@@ -393,6 +393,37 @@ class OrderService: ObservableObject {
             } else {
                 completion(.success(()))
             }
+        }
+    }
+
+    private static func userOrderHistorySort(_ lhs: OrderData, _ rhs: OrderData) -> Bool {
+        let lhsPriority = userOrderHistoryPriority(for: lhs.status)
+        let rhsPriority = userOrderHistoryPriority(for: rhs.status)
+
+        if lhsPriority != rhsPriority {
+            return lhsPriority < rhsPriority
+        }
+
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        return (lhs.id ?? "") > (rhs.id ?? "")
+    }
+
+    private static func userOrderHistoryPriority(for status: String) -> Int {
+        switch status {
+        case OrderStatus.pending.rawValue,
+             OrderStatus.confirmed.rawValue,
+             OrderStatus.preparing.rawValue:
+            return 0
+        case OrderStatus.ready.rawValue,
+             OrderStatus.delivered.rawValue:
+            return 1
+        case OrderStatus.cancelled.rawValue:
+            return 2
+        default:
+            return 3
         }
     }
 
