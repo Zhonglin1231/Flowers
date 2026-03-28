@@ -212,7 +212,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var selectedDIYFlowerCategory: FlowerCategory = .tulip
     @Published var selectedFlowerQuantities: [String: Int] = [:]
     @Published var selectedWrappingOptionID: String?
-    @Published var includeGreetingCard = true
+    @Published var includeGreetingCard = false
     @Published var cardMessage = ""
     @Published var selectedBlessingTemplateID: String?
     @Published var generatedPreview: AIGeneratedPreview?
@@ -477,7 +477,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     var arrangementFee: Double {
-        selectedDIYFlowers.isEmpty ? 0 : 50
+        0
     }
 
     var diyTotalPrice: Double {
@@ -1700,7 +1700,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         selectedDIYFlowerCategory = preferredDIYCategory ?? diyFlowerCategories.first ?? .rose
         selectedFlowerQuantities = [:]
         selectedWrappingOptionID = nil
-        includeGreetingCard = true
+        includeGreetingCard = false
         cardMessage = ""
         selectedBlessingTemplateID = nil
         generatedPreview = nil
