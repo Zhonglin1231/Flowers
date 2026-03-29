@@ -484,7 +484,7 @@ private struct ArkImageGenerationRequest: Encodable {
     let image: [String]?
     let sequentialImageGeneration: String = "disabled"
     let responseFormat: String = "url"
-    let size: String = "2K"
+    let size: String = "1280x720"
     let stream: Bool = false
     let watermark: Bool = true
     

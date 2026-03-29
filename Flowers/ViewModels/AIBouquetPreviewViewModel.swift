@@ -12,7 +12,7 @@ import Foundation
 final class AIBouquetPreviewViewModel: ObservableObject {
     @Published var requirement = ""
     @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
-    @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-5-0-260128"
+    @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-4-0-250828"
     @Published var searchSummary = "输入花束需求后，先做一次数据库智能检索。"
     @Published var searchNotes: [String] = []
     @Published var selections: [AIBouquetSelection] = []

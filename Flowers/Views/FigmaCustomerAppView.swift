@@ -220,7 +220,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var isGeneratingPreview = false
     @Published var showPreviewDisclaimer = false
     @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
-    @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-5-0-250428"
+    @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-4-0-250828"
     @Published var assistantAPIKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
     @Published var assistantModelName = ProcessInfo.processInfo.environment["ARK_CHAT_MODEL"] ?? "doubao-seed-2-0-mini-260215"
     @Published var assistantReasoningEffort = ProcessInfo.processInfo.environment["ARK_CHAT_REASONING_EFFORT"] ?? "minimal"
