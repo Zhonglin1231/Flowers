@@ -386,6 +386,18 @@ final class FigmaCustomerAppModel: ObservableObject {
         availableBouquetProducts.dropFirst().first ?? featuredBouquetProduct
     }
 
+    var homeFlowerStripImageURLs: [String] {
+        let liveURLs = uniqueNonEmptyStrings(
+            from: availableFlowers.compactMap { $0.imageURL?.absoluteString }
+        )
+
+        if !liveURLs.isEmpty {
+            return Array(liveURLs.prefix(HomeFlowerStrip.maximumItemCount))
+        }
+
+        return Array(HomeFlowerStrip.fallbackItems.prefix(HomeFlowerStrip.maximumItemCount))
+    }
+
     var filteredFlowers: [Flower] {
         let flowers = availableFlowers
         guard let selectedFlowerCategory else { return flowers }
@@ -2406,6 +2418,17 @@ final class FigmaCustomerAppModel: ObservableObject {
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
+
+    private func uniqueNonEmptyStrings(from values: [String]) -> [String] {
+        var seen = Set<String>()
+
+        return values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            guard seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
 }
 
 struct BouquetProduct: Identifiable, Hashable {
@@ -3205,7 +3228,7 @@ private struct HomeScreen: View {
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 18) {
-                                ForEach(HomeFlowerStrip.items, id: \.self) { imageURL in
+                                ForEach(appModel.homeFlowerStripImageURLs, id: \.self) { imageURL in
                                     Button {
                                         appModel.selectTab(.browse)
                                     } label: {
@@ -3239,7 +3262,7 @@ private struct HomeScreen: View {
                             PromoCard(
                                 title: "打造你的專屬小花園!",
                                 subtitle: "每次購買都能獲得花園積分，在你的專屬小花園種下新的花朵！",
-                                imageURL: "https://www.figma.com/api/mcp/asset/06569cce-e730-4552-8119-356e260defbf",
+                                imageURL: GardenImageAsset.hero,
                                 width: 313
                             ) {
                                 appModel.selectTab(.profile)
@@ -5277,7 +5300,7 @@ private struct ProfileScreen: View {
                         } label: {
                             VStack(spacing: 10) {
                                 RemoteAssetImage(
-                                    urlString: "https://www.figma.com/api/mcp/asset/f891dc4f-4ea4-459c-87d3-7541f282893f",
+                                    urlString: GardenImageAsset.thumbnail,
                                     fallbackSystemName: "leaf.circle",
                                     contentMode: .fill
                                 )
@@ -8454,13 +8477,20 @@ private struct DIYAssistantGuideOverlay: View {
 }
 
 private enum HomeFlowerStrip {
-    static let items: [String] = [
-        "https://www.figma.com/api/mcp/asset/e7d2b497-9bb1-4628-832f-96d4b9229da4",
-        "https://www.figma.com/api/mcp/asset/3a16900a-6d67-4efb-a31f-99e12c65f8d5",
-        "https://www.figma.com/api/mcp/asset/d4805143-4654-4ffa-b74d-02537a3c965b",
-        "https://www.figma.com/api/mcp/asset/26ab7e9e-cefd-4918-849a-8d0d9af89003",
-        "https://www.figma.com/api/mcp/asset/ee5b5642-f9f7-4540-9bae-b9ddb2a9a040"
+    static let maximumItemCount = 5
+
+    static let fallbackItems: [String] = [
+        "https://images.unsplash.com/photo-1519378058457-4c29a0a2efac?auto=format&fit=crop&w=600&q=80",
+        "https://images.unsplash.com/photo-1527061011665-3652c757a4d4?auto=format&fit=crop&w=600&q=80",
+        "https://images.unsplash.com/photo-1562690868-60bbe7293e94?auto=format&fit=crop&w=600&q=80",
+        "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=600&q=80",
+        "https://images.unsplash.com/photo-1597848212624-c84e6d3b6166?auto=format&fit=crop&w=600&q=80"
     ]
+}
+
+private enum GardenImageAsset {
+    static let hero = "https://images.unsplash.com/photo-1466692476868-aef1dfb1e735?auto=format&fit=crop&w=1200&q=80"
+    static let thumbnail = "https://images.unsplash.com/photo-1502082553048-f009c37129b9?auto=format&fit=crop&w=600&q=80"
 }
 
 private enum FigmaPalette {
