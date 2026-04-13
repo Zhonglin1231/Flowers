@@ -171,6 +171,67 @@ final class FigmaCustomerAppModel: ObservableObject {
         case preview
     }
 
+    enum ColorOfDay: String, CaseIterable, Identifiable {
+        case yellow
+        case pink
+        case blue
+        case red
+        case green
+
+        var id: String {
+            rawValue
+        }
+
+        var title: String {
+            rawValue.capitalized
+        }
+
+        var swatch: Color {
+            switch self {
+            case .yellow:
+                return Color(red: 1.0, green: 0.84, blue: 0.22)
+            case .pink:
+                return Color(red: 0.96, green: 0.47, blue: 0.73)
+            case .blue:
+                return Color(red: 0.35, green: 0.58, blue: 0.98)
+            case .red:
+                return Color(red: 0.95, green: 0.30, blue: 0.30)
+            case .green:
+                return Color(red: 0.33, green: 0.74, blue: 0.48)
+            }
+        }
+
+        var meaningText: String {
+            switch self {
+            case .yellow:
+                return "Yellow represents warmth and positivity, perfect for cheering someone up."
+            case .pink:
+                return "Pink represents tenderness and affection, great for a thoughtful surprise."
+            case .blue:
+                return "Blue represents calm and trust, ideal for peaceful and elegant gifting."
+            case .red:
+                return "Red represents passion and courage, made for heartfelt moments."
+            case .green:
+                return "Green represents renewal and balance, a fresh way to send care."
+            }
+        }
+
+        var bouquetMatchKeywords: [String] {
+            switch self {
+            case .yellow:
+                return ["yellow", "gold", "sun", "sunflower", "黃", "向日葵", "暖", "晨曦", "香檳"]
+            case .pink:
+                return ["pink", "blush", "rose", "粉", "柔粉", "浪漫", "甜美"]
+            case .blue:
+                return ["blue", "azure", "ocean", "藍", "海", "天空", "繡球"]
+            case .red:
+                return ["red", "ruby", "passion", "紅", "熱情", "玫瑰", "浪漫"]
+            case .green:
+                return ["green", "garden", "fresh", "綠", "花園", "清新", "葉", "尤加利"]
+            }
+        }
+    }
+
     @Published var authState: AuthState = .welcome
     @Published var authEntryMode: AuthEntryMode = .login
     @Published var activeTab: MainTab = .home {
@@ -198,6 +259,8 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var selectedRecipient = "朋友"
     @Published var selectedOccasion = "生日"
     @Published var selectedColor = "粉色"
+    @Published var colorOfTheDay: ColorOfDay = .yellow
+    @Published private(set) var isShowingColorOfDayPumpUp = false
     @Published var selectedBudget = "港幣100-200元"
     @Published var availableFlowers: [Flower] = []
     @Published var availableBouquetProducts: [BouquetProduct] = []
@@ -279,6 +342,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     private var hasTriggeredDIYAssistantGuideThisLaunch = false
 
     init() {
+        colorOfTheDay = resolvedColorOfTheDay()
         resetAssistantChat()
         loadPersistedRestockReminderState()
         setupFlowerBindings()
@@ -297,6 +361,7 @@ final class FigmaCustomerAppModel: ObservableObject {
             email = FirebaseManager.shared.authenticatedEmail ?? ""
             refreshUserOrders()
             loadCurrentUserProfile()
+            openColorOfDayPumpUp()
         }
     }
 
@@ -384,6 +449,34 @@ final class FigmaCustomerAppModel: ObservableObject {
     
     var promotionalBouquetProduct: BouquetProduct? {
         availableBouquetProducts.dropFirst().first ?? featuredBouquetProduct
+    }
+
+    var colorTheme: Color {
+        colorOfTheDay.swatch
+    }
+
+    var colorOfDayRecommendedBouquets: [BouquetProduct] {
+        let sourceProducts = availableBouquetProducts.isEmpty ? BouquetProduct.catalog : availableBouquetProducts
+        let scoredProducts = sourceProducts.compactMap { product -> (product: BouquetProduct, score: Int)? in
+            let score = colorMatchScore(for: product, color: colorOfTheDay)
+            return score > 0 ? (product, score) : nil
+        }
+
+        if !scoredProducts.isEmpty {
+            return Array(
+                scoredProducts
+                    .sorted { lhs, rhs in
+                        if lhs.score == rhs.score {
+                            return lhs.product.name < rhs.product.name
+                        }
+                        return lhs.score > rhs.score
+                    }
+                    .map(\.product)
+                    .prefix(4)
+            )
+        }
+
+        return Array(sourceProducts.prefix(4))
     }
 
     var homeFlowerStripImageURLs: [String] {
@@ -801,9 +894,18 @@ final class FigmaCustomerAppModel: ObservableObject {
     func enterAsGuest() {
         authEntryMode = .login
         authErrorMessage = nil
+        openColorOfDayPumpUp()
         authState = .main
         activeTab = .home
         overlayScreen = nil
+    }
+
+    func chooseColorOfTheDay(_ color: ColorOfDay) {
+        colorOfTheDay = color
+    }
+
+    func dismissColorOfDayPumpUp() {
+        isShowingColorOfDayPumpUp = false
     }
 
     func submitAuthForm() {
@@ -1684,6 +1786,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     private func finalizeSuccessfulAuthentication() {
         authEntryMode = .login
         dismissAuthError()
+        openColorOfDayPumpUp()
         authState = .main
         activeTab = .home
         overlayScreen = nil
@@ -1730,9 +1833,48 @@ final class FigmaCustomerAppModel: ObservableObject {
         isSubmittingPayment = false
         paymentErrorMessage = nil
         submittedTrackingOrder = nil
+        isShowingColorOfDayPumpUp = false
         resetAssistantSelections()
         resetDIYFlow()
         resetAssistantChat()
+    }
+
+    private func openColorOfDayPumpUp() {
+        colorOfTheDay = resolvedColorOfTheDay()
+        isShowingColorOfDayPumpUp = true
+    }
+
+    private func resolvedColorOfTheDay(for date: Date = Date()) -> ColorOfDay {
+        switch Calendar.current.component(.weekday, from: date) {
+        case 2:
+            return .yellow
+        case 3:
+            return .blue
+        case 4:
+            return .pink
+        case 5:
+            return .green
+        case 6:
+            return .red
+        case 7:
+            return .yellow
+        default:
+            return .blue
+        }
+    }
+
+    private func colorMatchScore(for product: BouquetProduct, color: ColorOfDay) -> Int {
+        let searchableText = ([product.name, product.tagline] + product.descriptionLines + product.longDescription)
+            .joined(separator: " ")
+            .lowercased()
+
+        return color.bouquetMatchKeywords.reduce(0) { score, keyword in
+            let normalizedKeyword = keyword.lowercased()
+            guard !normalizedKeyword.isEmpty, searchableText.contains(normalizedKeyword) else {
+                return score
+            }
+            return score + (normalizedKeyword.count > 2 ? 3 : 2)
+        }
     }
 
     private func resetDIYFlow() {
@@ -2869,9 +3011,16 @@ private struct MainFlowScreen: View {
                     ProfileScreen(appModel: appModel)
                 }
             }
+
+            if appModel.isShowingColorOfDayPumpUp {
+                ColorOfDayPumpUpModal(appModel: appModel)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(50)
+            }
         }
         .animation(.easeInOut(duration: 0.22), value: appModel.activeTab)
         .animation(.easeInOut(duration: 0.22), value: appModel.overlayScreen != nil)
+        .animation(.easeInOut(duration: 0.2), value: appModel.isShowingColorOfDayPumpUp)
     }
 }
 
@@ -3206,6 +3355,7 @@ private struct HomeScreen: View {
                         HStack(alignment: .top) {
                             Text("蔚蘭園")
                                 .font(.system(size: 14, weight: .regular))
+                                .foregroundColor(appModel.colorTheme.opacity(0.95))
 
                             Spacer()
 
@@ -3218,6 +3368,7 @@ private struct HomeScreen: View {
 
                         Text("每一次，\n都為您打造完美花束")
                             .font(.system(size: 29, weight: .bold))
+                            .foregroundColor(appModel.colorTheme.opacity(0.92))
                             .lineSpacing(2)
                     }
                     .padding(.top, 8)
@@ -3225,6 +3376,7 @@ private struct HomeScreen: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("前往瀏覽鮮花")
                             .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(appModel.colorTheme.opacity(0.92))
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 18) {
@@ -3248,13 +3400,13 @@ private struct HomeScreen: View {
                         }
                         .background(
                             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .fill(Color.white)
+                                .fill(appModel.colorTheme.opacity(0.12))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .stroke(FigmaPalette.softPink, lineWidth: 1)
+                                .stroke(appModel.colorTheme.opacity(0.5), lineWidth: 1)
                         )
-                        .shadow(color: FigmaPalette.softPink.opacity(0.5), radius: 5, x: 0, y: 0)
+                        .shadow(color: appModel.colorTheme.opacity(0.24), radius: 6, x: 0, y: 2)
                     }
 
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -3263,7 +3415,8 @@ private struct HomeScreen: View {
                                 title: "打造你的專屬小花園!",
                                 subtitle: "每次購買都能獲得花園積分，在你的專屬小花園種下新的花朵！",
                                 imageURL: GardenImageAsset.hero,
-                                width: 313
+                                width: 313,
+                                borderColor: appModel.colorTheme.opacity(0.42)
                             ) {
                                 appModel.selectTab(.profile)
                             }
@@ -3273,7 +3426,8 @@ private struct HomeScreen: View {
                                     title: promotionalProduct.name,
                                     subtitle: ([promotionalProduct.tagline] + Array(promotionalProduct.descriptionLines.prefix(1))).joined(separator: " · "),
                                     imageURL: promotionalProduct.imageURL,
-                                    width: 311
+                                    width: 311,
+                                    borderColor: appModel.colorTheme.opacity(0.42)
                                 ) {
                                     appModel.openProduct(promotionalProduct, from: .home)
                                 }
@@ -3284,11 +3438,12 @@ private struct HomeScreen: View {
                     if let featuredProduct = appModel.featuredBouquetProduct {
                         ZStack(alignment: .topLeading) {
                             RoundedRectangle(cornerRadius: 34, style: .continuous)
-                                .fill(FigmaPalette.softPink)
+                                .fill(appModel.colorTheme.opacity(0.3))
 
                             VStack(alignment: .leading, spacing: 0) {
                                 Text("本月精選花束")
                                     .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
                                     .padding(.top, 24)
                                     .padding(.leading, 23)
 
@@ -3311,8 +3466,10 @@ private struct HomeScreen: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(featuredProduct.name)
                                         .font(.system(size: 14, weight: .regular))
+                                        .foregroundColor(appModel.colorTheme.opacity(0.9))
                                     Text(([featuredProduct.tagline] + Array(featuredProduct.descriptionLines.prefix(2))).joined(separator: "\n"))
                                         .font(.system(size: 10, weight: .regular))
+                                        .foregroundColor(appModel.colorTheme.opacity(0.85))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 .padding(.leading, 23)
@@ -3325,7 +3482,7 @@ private struct HomeScreen: View {
                                 } label: {
                                     Image(systemName: "chevron.left")
                                         .font(.system(size: 24, weight: .bold))
-                                        .foregroundColor(.white)
+                                        .foregroundColor(appModel.colorTheme.opacity(0.95))
                                         .frame(width: 56, height: 242)
                                 }
                                 .buttonStyle(.plain)
@@ -3344,7 +3501,7 @@ private struct HomeScreen: View {
                                 } label: {
                                     Image(systemName: "chevron.right")
                                         .font(.system(size: 24, weight: .bold))
-                                        .foregroundColor(.white)
+                                        .foregroundColor(appModel.colorTheme.opacity(0.95))
                                         .frame(width: 56, height: 242)
                                 }
                                 .buttonStyle(.plain)
@@ -3363,6 +3520,337 @@ private struct HomeScreen: View {
         .onReceive(featuredAutoplayTimer) { _ in
             appModel.showNextFeaturedProduct()
         }
+    }
+}
+
+private struct ColorOfDayPumpUpModal: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+    @State private var wheelRotation: Double = 0
+    @State private var isSpinning = false
+    @State private var hasRevealedDetails = false
+
+    private var colorOptions: [FigmaCustomerAppModel.ColorOfDay] {
+        FigmaCustomerAppModel.ColorOfDay.allCases
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    Text("What’s your color of the day?")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(appModel.colorTheme.opacity(0.95))
+
+                    Spacer()
+
+                    Button {
+                        appModel.dismissColorOfDayPumpUp()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(appModel.colorTheme.opacity(0.9))
+                            .frame(width: 30, height: 30)
+                            .background(
+                                Circle()
+                                    .fill(appModel.colorTheme.opacity(0.18))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ZStack {
+                            ColorWheelDonut(
+                                options: colorOptions,
+                                selectedColor: appModel.colorOfTheDay
+                            ) { color in
+                                guard !isSpinning else { return }
+                                selectColorAndReveal(color)
+                            }
+                            .rotationEffect(.degrees(wheelRotation))
+                            .frame(width: 208, height: 208)
+
+                            Button(action: spinToDecide) {
+                                VStack(spacing: 2) {
+                                    Text(isSpinning ? "..." : "SPIN")
+                                        .font(.system(size: 17, weight: .bold))
+                                        .foregroundColor(.white)
+
+                                    if hasRevealedDetails, !isSpinning {
+                                        Text(appModel.colorOfTheDay.title)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.88))
+                                    }
+                                }
+                                .frame(width: 90, height: 90)
+                                .background(
+                                    Circle()
+                                        .fill(appModel.colorTheme)
+                                )
+                                .overlay(
+                                    Circle()
+                                        .stroke(appModel.colorTheme.opacity(0.95), lineWidth: 2)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSpinning)
+                            .opacity(isSpinning ? 0.85 : 1)
+
+                            VStack {
+                                Image(systemName: "arrowtriangle.down.fill")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(appModel.colorTheme.opacity(0.9))
+                                    .offset(y: -108)
+                                Spacer()
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+
+                        if hasRevealedDetails {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Option B: Tap a color directly")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(appModel.colorTheme.opacity(0.88))
+
+                                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                                    ForEach(colorOptions) { color in
+                                        Button {
+                                            guard !isSpinning else { return }
+                                            selectColorAndReveal(color)
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Circle()
+                                                    .fill(color.swatch)
+                                                    .frame(width: 14, height: 14)
+                                                    .overlay(
+                                                        Circle()
+                                                            .stroke(Color.black.opacity(0.25), lineWidth: 0.8)
+                                                    )
+
+                                                Text(color.title)
+                                                    .font(.system(size: 12, weight: .semibold))
+                                                    .foregroundColor(.black)
+                                            }
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 34)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                    .fill(color == appModel.colorOfTheDay ? Color.white : Color.white.opacity(0.68))
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                    .stroke(
+                                                        color == appModel.colorOfTheDay
+                                                        ? appModel.colorTheme.opacity(0.7)
+                                                        : Color.black.opacity(0.14),
+                                                        lineWidth: color == appModel.colorOfTheDay ? 1.3 : 0.8
+                                                    )
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Today’s color: \(appModel.colorOfTheDay.title)")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
+
+                                Text(appModel.colorOfTheDay.meaningText)
+                                    .font(.system(size: 13, weight: .regular))
+                                    .foregroundColor(.black.opacity(0.72))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            VStack(alignment: .leading, spacing: 9) {
+                                Text("Bouquets for your color")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 12) {
+                                        ForEach(Array(appModel.colorOfDayRecommendedBouquets.prefix(4))) { product in
+                                            DailyColorBouquetCard(
+                                                product: product,
+                                                themeColor: appModel.colorTheme
+                                            ) {
+                                                appModel.openProduct(product, from: .home)
+                                                appModel.dismissColorOfDayPumpUp()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 18)
+            .frame(maxWidth: 380)
+            .frame(maxHeight: 640)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(appModel.colorTheme.opacity(0.1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(appModel.colorTheme.opacity(0.45), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 20, x: 0, y: 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 30)
+        }
+    }
+
+    private func spinToDecide() {
+        guard !isSpinning else { return }
+        guard !colorOptions.isEmpty else { return }
+
+        isSpinning = true
+        var targetColor = colorOptions.randomElement() ?? appModel.colorOfTheDay
+
+        if colorOptions.count > 1 {
+            while targetColor == appModel.colorOfTheDay {
+                targetColor = colorOptions.randomElement() ?? appModel.colorOfTheDay
+            }
+        }
+
+        let spinDegrees = Double(Int.random(in: 3...5)) * 360 + Double.random(in: 0...360)
+        withAnimation(.easeOut(duration: 1.0)) {
+            wheelRotation += spinDegrees
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            selectColorAndReveal(targetColor)
+            isSpinning = false
+        }
+    }
+
+    private func selectColorAndReveal(_ color: FigmaCustomerAppModel.ColorOfDay) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            appModel.chooseColorOfTheDay(color)
+            hasRevealedDetails = true
+        }
+    }
+}
+
+private struct ColorWheelDonut: View {
+    let options: [FigmaCustomerAppModel.ColorOfDay]
+    let selectedColor: FigmaCustomerAppModel.ColorOfDay
+    let onSelectColor: (FigmaCustomerAppModel.ColorOfDay) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let dimension = min(proxy.size.width, proxy.size.height)
+            let ringRect = CGRect(origin: .zero, size: CGSize(width: dimension, height: dimension))
+            let segmentAngle = 360.0 / Double(max(options.count, 1))
+            let gapAngle = 6.0
+
+            ZStack {
+                ForEach(Array(options.enumerated()), id: \.element.id) { index, color in
+                    let startAngle = Angle(degrees: -90 + (Double(index) * segmentAngle) + gapAngle / 2)
+                    let endAngle = Angle(degrees: -90 + (Double(index + 1) * segmentAngle) - gapAngle / 2)
+
+                    Button {
+                        onSelectColor(color)
+                    } label: {
+                        DonutSegment(
+                            startAngle: startAngle,
+                            endAngle: endAngle,
+                            innerRadiusRatio: 0.56
+                        )
+                        .fill(color.swatch)
+                        .overlay(
+                            DonutSegment(
+                                startAngle: startAngle,
+                                endAngle: endAngle,
+                                innerRadiusRatio: 0.56
+                            )
+                            .stroke(color == selectedColor ? Color.black.opacity(0.86) : Color.white.opacity(0.52), lineWidth: color == selectedColor ? 2.8 : 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(width: ringRect.width, height: ringRect.height)
+        }
+    }
+}
+
+private struct DonutSegment: Shape {
+    let startAngle: Angle
+    let endAngle: Angle
+    let innerRadiusRatio: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outerRadius = min(rect.width, rect.height) / 2
+        let innerRadius = max(outerRadius * innerRadiusRatio, 0)
+
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: outerRadius,
+            startAngle: startAngle,
+            endAngle: endAngle,
+            clockwise: false
+        )
+        path.addArc(
+            center: center,
+            radius: innerRadius,
+            startAngle: endAngle,
+            endAngle: startAngle,
+            clockwise: true
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct DailyColorBouquetCard: View {
+    let product: BouquetProduct
+    let themeColor: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                RemoteAssetImage(
+                    urlString: product.imageURL,
+                    fallbackSystemName: "gift.fill",
+                    contentMode: .fill
+                )
+                .frame(width: 144, height: 86)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Text(product.name)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(themeColor.opacity(0.95))
+                    .lineLimit(1)
+
+                Text(product.priceText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(themeColor.opacity(0.82))
+            }
+            .padding(8)
+            .frame(width: 160, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(themeColor.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(themeColor.opacity(0.45), lineWidth: 1.1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -5796,7 +6284,24 @@ private struct PromoCard: View {
     let subtitle: String
     let imageURL: String
     let width: CGFloat
+    let borderColor: Color
     let action: () -> Void
+
+    init(
+        title: String,
+        subtitle: String,
+        imageURL: String,
+        width: CGFloat,
+        borderColor: Color = .clear,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.imageURL = imageURL
+        self.width = width
+        self.borderColor = borderColor
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -5833,6 +6338,10 @@ private struct PromoCard: View {
                 .padding(.vertical, 12)
                 .frame(width: width, alignment: .leading)
             }
+            .overlay(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
