@@ -3193,11 +3193,9 @@ private struct WelcomeScreen: View {
                 }
                 .padding(.top, 8)
 
-                RemoteAssetImage(
-                    urlString: "https://www.figma.com/api/mcp/asset/71798e89-6195-4613-ad54-6063dab6c251",
-                    fallbackSystemName: "gift.fill",
-                    contentMode: .fit
-                )
+                Image("LoginCover")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
                 .frame(height: 380)
                 .padding(.top, 18)
                 .padding(.horizontal, 10)
