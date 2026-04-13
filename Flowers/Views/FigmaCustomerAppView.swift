@@ -136,15 +136,15 @@ final class FigmaCustomerAppModel: ObservableObject {
         var selectedColor: Color {
             switch self {
             case .browse:
-                return Color(red: 0.07, green: 0.30, blue: 0.26)
+                return FigmaPalette.hotPink
             case .assistant:
-                return Color(red: 0.25, green: 0.21, blue: 0.38)
+                return FigmaPalette.hotPink
             case .home:
-                return .black
+                return FigmaPalette.hotPink
             case .cart:
-                return .black
+                return FigmaPalette.hotPink
             case .profile:
-                return .black
+                return FigmaPalette.hotPink
             }
         }
     }
@@ -186,19 +186,24 @@ final class FigmaCustomerAppModel: ObservableObject {
             rawValue.capitalized
         }
 
-        var swatch: Color {
+        var rgbComponents: (red: Double, green: Double, blue: Double) {
             switch self {
             case .yellow:
-                return Color(red: 1.0, green: 0.84, blue: 0.22)
+                return (1.0, 0.84, 0.22)
             case .pink:
-                return Color(red: 0.96, green: 0.47, blue: 0.73)
+                return (0.96, 0.47, 0.73)
             case .blue:
-                return Color(red: 0.35, green: 0.58, blue: 0.98)
+                return (0.35, 0.58, 0.98)
             case .red:
-                return Color(red: 0.95, green: 0.30, blue: 0.30)
+                return (0.95, 0.30, 0.30)
             case .green:
-                return Color(red: 0.33, green: 0.74, blue: 0.48)
+                return (0.33, 0.74, 0.48)
             }
+        }
+
+        var swatch: Color {
+            let rgb = rgbComponents
+            return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
         }
 
         var meaningText: String {
@@ -259,7 +264,12 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var selectedRecipient = "朋友"
     @Published var selectedOccasion = "生日"
     @Published var selectedColor = "粉色"
-    @Published var colorOfTheDay: ColorOfDay = .yellow
+    @Published var colorOfTheDay: ColorOfDay = .yellow {
+        didSet {
+            syncThemePalette()
+        }
+    }
+    @Published private(set) var hasChosenColorOfDay = false
     @Published private(set) var isShowingColorOfDayPumpUp = false
     @Published var selectedBudget = "港幣100-200元"
     @Published var availableFlowers: [Flower] = []
@@ -342,7 +352,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     private var hasTriggeredDIYAssistantGuideThisLaunch = false
 
     init() {
-        colorOfTheDay = resolvedColorOfTheDay()
+        syncThemePalette()
         resetAssistantChat()
         loadPersistedRestockReminderState()
         setupFlowerBindings()
@@ -452,7 +462,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     var colorTheme: Color {
-        colorOfTheDay.swatch
+        hasChosenColorOfDay ? colorOfTheDay.swatch : .black
     }
 
     var colorOfDayRecommendedBouquets: [BouquetProduct] {
@@ -901,11 +911,16 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     func chooseColorOfTheDay(_ color: ColorOfDay) {
+        hasChosenColorOfDay = true
         colorOfTheDay = color
     }
 
     func dismissColorOfDayPumpUp() {
         isShowingColorOfDayPumpUp = false
+    }
+
+    func reopenColorOfDayPumpUp() {
+        isShowingColorOfDayPumpUp = true
     }
 
     func submitAuthForm() {
@@ -1833,6 +1848,8 @@ final class FigmaCustomerAppModel: ObservableObject {
         isSubmittingPayment = false
         paymentErrorMessage = nil
         submittedTrackingOrder = nil
+        hasChosenColorOfDay = false
+        syncThemePalette()
         isShowingColorOfDayPumpUp = false
         resetAssistantSelections()
         resetDIYFlow()
@@ -1840,26 +1857,16 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     private func openColorOfDayPumpUp() {
-        colorOfTheDay = resolvedColorOfTheDay()
+        hasChosenColorOfDay = false
+        syncThemePalette()
         isShowingColorOfDayPumpUp = true
     }
 
-    private func resolvedColorOfTheDay(for date: Date = Date()) -> ColorOfDay {
-        switch Calendar.current.component(.weekday, from: date) {
-        case 2:
-            return .yellow
-        case 3:
-            return .blue
-        case 4:
-            return .pink
-        case 5:
-            return .green
-        case 6:
-            return .red
-        case 7:
-            return .yellow
-        default:
-            return .blue
+    private func syncThemePalette() {
+        if hasChosenColorOfDay {
+            FigmaPalette.applyTheme(colorOfTheDay)
+        } else {
+            FigmaPalette.applyNeutralTheme()
         }
     }
 
@@ -3042,11 +3049,15 @@ private struct NotificationsScreen: View {
 
                         Spacer()
 
-                        NotificationBellButton(
-                            unreadCount: appModel.unreadNotificationCount,
-                            size: 30,
-                            action: appModel.openNotifications
-                        )
+                        HStack(spacing: 8) {
+                            ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                            NotificationBellButton(
+                                unreadCount: appModel.unreadNotificationCount,
+                                size: 30,
+                                action: appModel.openNotifications
+                            )
+                        }
                     }
                     .padding(.top, 18)
 
@@ -3355,20 +3366,22 @@ private struct HomeScreen: View {
                         HStack(alignment: .top) {
                             Text("蔚蘭園")
                                 .font(.system(size: 14, weight: .regular))
-                                .foregroundColor(appModel.colorTheme.opacity(0.95))
 
                             Spacer()
 
-                            NotificationBellButton(
-                                unreadCount: appModel.unreadNotificationCount,
-                                size: 30,
-                                action: appModel.openNotifications
-                            )
+                            HStack(spacing: 8) {
+                                ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                                NotificationBellButton(
+                                    unreadCount: appModel.unreadNotificationCount,
+                                    size: 30,
+                                    action: appModel.openNotifications
+                                )
+                            }
                         }
 
                         Text("每一次，\n都為您打造完美花束")
                             .font(.system(size: 29, weight: .bold))
-                            .foregroundColor(appModel.colorTheme.opacity(0.92))
                             .lineSpacing(2)
                     }
                     .padding(.top, 8)
@@ -3376,7 +3389,6 @@ private struct HomeScreen: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("前往瀏覽鮮花")
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(appModel.colorTheme.opacity(0.92))
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 18) {
@@ -3400,13 +3412,13 @@ private struct HomeScreen: View {
                         }
                         .background(
                             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .fill(appModel.colorTheme.opacity(0.12))
+                                .fill(Color.white)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .stroke(appModel.colorTheme.opacity(0.5), lineWidth: 1)
+                                .stroke(appModel.colorTheme.opacity(0.35), lineWidth: 1)
                         )
-                        .shadow(color: appModel.colorTheme.opacity(0.24), radius: 6, x: 0, y: 2)
+                        .shadow(color: appModel.colorTheme.opacity(0.16), radius: 6, x: 0, y: 2)
                     }
 
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -3416,7 +3428,7 @@ private struct HomeScreen: View {
                                 subtitle: "每次購買都能獲得花園積分，在你的專屬小花園種下新的花朵！",
                                 imageURL: GardenImageAsset.hero,
                                 width: 313,
-                                borderColor: appModel.colorTheme.opacity(0.42)
+                                borderColor: appModel.colorTheme.opacity(0.26)
                             ) {
                                 appModel.selectTab(.profile)
                             }
@@ -3427,7 +3439,7 @@ private struct HomeScreen: View {
                                     subtitle: ([promotionalProduct.tagline] + Array(promotionalProduct.descriptionLines.prefix(1))).joined(separator: " · "),
                                     imageURL: promotionalProduct.imageURL,
                                     width: 311,
-                                    borderColor: appModel.colorTheme.opacity(0.42)
+                                    borderColor: appModel.colorTheme.opacity(0.26)
                                 ) {
                                     appModel.openProduct(promotionalProduct, from: .home)
                                 }
@@ -3438,12 +3450,11 @@ private struct HomeScreen: View {
                     if let featuredProduct = appModel.featuredBouquetProduct {
                         ZStack(alignment: .topLeading) {
                             RoundedRectangle(cornerRadius: 34, style: .continuous)
-                                .fill(appModel.colorTheme.opacity(0.3))
+                                .fill(appModel.colorTheme.opacity(0.16))
 
                             VStack(alignment: .leading, spacing: 0) {
                                 Text("本月精選花束")
                                     .font(.system(size: 16, weight: .bold))
-                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
                                     .padding(.top, 24)
                                     .padding(.leading, 23)
 
@@ -3466,10 +3477,8 @@ private struct HomeScreen: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(featuredProduct.name)
                                         .font(.system(size: 14, weight: .regular))
-                                        .foregroundColor(appModel.colorTheme.opacity(0.9))
                                     Text(([featuredProduct.tagline] + Array(featuredProduct.descriptionLines.prefix(2))).joined(separator: "\n"))
                                         .font(.system(size: 10, weight: .regular))
-                                        .foregroundColor(appModel.colorTheme.opacity(0.85))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 .padding(.leading, 23)
@@ -3482,7 +3491,7 @@ private struct HomeScreen: View {
                                 } label: {
                                     Image(systemName: "chevron.left")
                                         .font(.system(size: 24, weight: .bold))
-                                        .foregroundColor(appModel.colorTheme.opacity(0.95))
+                                        .foregroundColor(.black.opacity(0.7))
                                         .frame(width: 56, height: 242)
                                 }
                                 .buttonStyle(.plain)
@@ -3501,7 +3510,7 @@ private struct HomeScreen: View {
                                 } label: {
                                     Image(systemName: "chevron.right")
                                         .font(.system(size: 24, weight: .bold))
-                                        .foregroundColor(appModel.colorTheme.opacity(0.95))
+                                        .foregroundColor(.black.opacity(0.7))
                                         .frame(width: 56, height: 242)
                                 }
                                 .buttonStyle(.plain)
@@ -3528,6 +3537,7 @@ private struct ColorOfDayPumpUpModal: View {
     @State private var wheelRotation: Double = 0
     @State private var isSpinning = false
     @State private var hasRevealedDetails = false
+    @State private var hasAnimatedWheel = false
 
     private var colorOptions: [FigmaCustomerAppModel.ColorOfDay] {
         FigmaCustomerAppModel.ColorOfDay.allCases
@@ -3535,14 +3545,14 @@ private struct ColorOfDayPumpUpModal: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.35)
+            Color.black.opacity(0.2)
                 .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center) {
                     Text("What’s your color of the day?")
                         .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(appModel.colorTheme.opacity(0.95))
+                        .foregroundColor(.black)
 
                     Spacer()
 
@@ -3551,143 +3561,36 @@ private struct ColorOfDayPumpUpModal: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(appModel.colorTheme.opacity(0.9))
+                            .foregroundColor(.black.opacity(0.75))
                             .frame(width: 30, height: 30)
                             .background(
                                 Circle()
-                                    .fill(appModel.colorTheme.opacity(0.18))
+                                    .fill(Color.black.opacity(0.08))
                             )
                     }
                     .buttonStyle(.plain)
                 }
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ZStack {
-                            ColorWheelDonut(
-                                options: colorOptions,
-                                selectedColor: appModel.colorOfTheDay
-                            ) { color in
-                                guard !isSpinning else { return }
-                                selectColorAndReveal(color)
-                            }
-                            .rotationEffect(.degrees(wheelRotation))
-                            .frame(width: 208, height: 208)
-
-                            Button(action: spinToDecide) {
-                                VStack(spacing: 2) {
-                                    Text(isSpinning ? "..." : "SPIN")
-                                        .font(.system(size: 17, weight: .bold))
-                                        .foregroundColor(.white)
-
-                                    if hasRevealedDetails, !isSpinning {
-                                        Text(appModel.colorOfTheDay.title)
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundColor(.white.opacity(0.88))
-                                    }
-                                }
-                                .frame(width: 90, height: 90)
-                                .background(
-                                    Circle()
-                                        .fill(appModel.colorTheme)
-                                )
-                                .overlay(
-                                    Circle()
-                                        .stroke(appModel.colorTheme.opacity(0.95), lineWidth: 2)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isSpinning)
-                            .opacity(isSpinning ? 0.85 : 1)
-
-                            VStack {
-                                Image(systemName: "arrowtriangle.down.fill")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(appModel.colorTheme.opacity(0.9))
-                                    .offset(y: -108)
-                                Spacer()
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-
+                GeometryReader { proxy in
+                    Group {
                         if hasRevealedDetails {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Option B: Tap a color directly")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(appModel.colorTheme.opacity(0.88))
-
-                                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                                    ForEach(colorOptions) { color in
-                                        Button {
-                                            guard !isSpinning else { return }
-                                            selectColorAndReveal(color)
-                                        } label: {
-                                            HStack(spacing: 6) {
-                                                Circle()
-                                                    .fill(color.swatch)
-                                                    .frame(width: 14, height: 14)
-                                                    .overlay(
-                                                        Circle()
-                                                            .stroke(Color.black.opacity(0.25), lineWidth: 0.8)
-                                                    )
-
-                                                Text(color.title)
-                                                    .font(.system(size: 12, weight: .semibold))
-                                                    .foregroundColor(.black)
-                                            }
-                                            .frame(maxWidth: .infinity)
-                                            .frame(height: 34)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .fill(color == appModel.colorOfTheDay ? Color.white : Color.white.opacity(0.68))
-                                            )
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .stroke(
-                                                        color == appModel.colorOfTheDay
-                                                        ? appModel.colorTheme.opacity(0.7)
-                                                        : Color.black.opacity(0.14),
-                                                        lineWidth: color == appModel.colorOfTheDay ? 1.3 : 0.8
-                                                    )
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
+                            ScrollView(showsIndicators: false) {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    wheelPanel
+                                    detailsPanel
                                 }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                             }
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Today’s color: \(appModel.colorOfTheDay.title)")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
-
-                                Text(appModel.colorOfTheDay.meaningText)
-                                    .font(.system(size: 13, weight: .regular))
-                                    .foregroundColor(.black.opacity(0.72))
-                                    .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            VStack {
+                                Spacer(minLength: 0)
+                                wheelPanel
+                                Spacer(minLength: 0)
                             }
-
-                            VStack(alignment: .leading, spacing: 9) {
-                                Text("Bouquets for your color")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundColor(appModel.colorTheme.opacity(0.92))
-
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 12) {
-                                        ForEach(Array(appModel.colorOfDayRecommendedBouquets.prefix(4))) { product in
-                                            DailyColorBouquetCard(
-                                                product: product,
-                                                themeColor: appModel.colorTheme
-                                            ) {
-                                                appModel.openProduct(product, from: .home)
-                                                appModel.dismissColorOfDayPumpUp()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            .frame(maxWidth: .infinity, minHeight: proxy.size.height)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .padding(.horizontal, 18)
@@ -3697,16 +3600,168 @@ private struct ColorOfDayPumpUpModal: View {
             .frame(maxHeight: 640)
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(appModel.colorTheme.opacity(0.1))
+                    .fill(Color.white)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(appModel.colorTheme.opacity(0.45), lineWidth: 1)
+                    .stroke(appModel.colorTheme.opacity(0.3), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.18), radius: 20, x: 0, y: 10)
             .padding(.horizontal, 16)
             .padding(.vertical, 30)
+            .onAppear {
+                hasAnimatedWheel = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                    withAnimation(.easeOut(duration: 0.45)) {
+                        hasAnimatedWheel = true
+                    }
+                }
+            }
         }
+    }
+
+    private var wheelPanel: some View {
+        ZStack {
+            Circle()
+                .fill(FigmaPalette.softPink.opacity(0.55))
+                .frame(width: 236, height: 236)
+                .overlay(
+                    Circle()
+                        .stroke(FigmaPalette.hotPink.opacity(0.16), lineWidth: 1)
+                )
+
+            ColorWheelDonut(
+                options: colorOptions,
+                selectedColor: hasRevealedDetails ? appModel.colorOfTheDay : nil
+            ) { color in
+                guard !isSpinning else { return }
+                selectColorAndReveal(color)
+            }
+            .rotationEffect(.degrees(wheelRotation))
+            .frame(width: 208, height: 208)
+
+            Button(action: spinToDecide) {
+                VStack(spacing: 2) {
+                    Text(isSpinning ? "..." : "SPIN")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(.white)
+
+                    if hasRevealedDetails, !isSpinning {
+                        Text(appModel.colorOfTheDay.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.88))
+                    }
+                }
+                .frame(width: 90, height: 90)
+                .background(
+                    Circle()
+                        .fill(appModel.colorTheme.opacity(0.92))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.88), lineWidth: 2)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isSpinning)
+            .opacity(isSpinning ? 0.85 : 1)
+
+            VStack {
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.black.opacity(0.8))
+                    .offset(y: -108)
+                Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .scaleEffect(hasRevealedDetails ? 0.84 : 1.0)
+        .offset(y: hasRevealedDetails ? -10 : 0)
+        .opacity(hasAnimatedWheel ? 1 : 0)
+        .blur(radius: hasAnimatedWheel ? 0 : 8)
+        .animation(.spring(response: 0.5, dampingFraction: 0.83), value: hasRevealedDetails)
+        .animation(.easeOut(duration: 0.45), value: hasAnimatedWheel)
+    }
+
+    private var detailsPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Option B: Tap a color directly")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.black.opacity(0.8))
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                    ForEach(colorOptions) { color in
+                        Button {
+                            guard !isSpinning else { return }
+                            selectColorAndReveal(color)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(color.swatch)
+                                    .frame(width: 14, height: 14)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.black.opacity(0.25), lineWidth: 0.8)
+                                    )
+
+                                Text(color.title)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.black)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 34)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.white)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(
+                                        color == appModel.colorOfTheDay
+                                        ? appModel.colorTheme.opacity(0.6)
+                                        : Color.black.opacity(0.14),
+                                        lineWidth: color == appModel.colorOfTheDay ? 1.3 : 0.8
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Today’s color: \(appModel.colorOfTheDay.title)")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.black)
+
+                Text(appModel.colorOfTheDay.meaningText)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.black.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Bouquets for your color")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.black)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(Array(appModel.colorOfDayRecommendedBouquets.prefix(4))) { product in
+                            DailyColorBouquetCard(
+                                product: product,
+                                themeColor: appModel.colorTheme
+                            ) {
+                                appModel.openProduct(product, from: .home)
+                                appModel.dismissColorOfDayPumpUp()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func spinToDecide() {
@@ -3743,7 +3798,7 @@ private struct ColorOfDayPumpUpModal: View {
 
 private struct ColorWheelDonut: View {
     let options: [FigmaCustomerAppModel.ColorOfDay]
-    let selectedColor: FigmaCustomerAppModel.ColorOfDay
+    let selectedColor: FigmaCustomerAppModel.ColorOfDay?
     let onSelectColor: (FigmaCustomerAppModel.ColorOfDay) -> Void
 
     var body: some View {
@@ -3832,23 +3887,24 @@ private struct DailyColorBouquetCard: View {
 
                 Text(product.name)
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(themeColor.opacity(0.95))
+                    .foregroundColor(.black)
                     .lineLimit(1)
 
                 Text(product.priceText)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(themeColor.opacity(0.82))
+                    .foregroundColor(.black.opacity(0.68))
             }
             .padding(8)
             .frame(width: 160, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(themeColor.opacity(0.12))
+                    .fill(Color.white)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(themeColor.opacity(0.45), lineWidth: 1.1)
+                    .stroke(themeColor.opacity(0.24), lineWidth: 1)
             )
+            .shadow(color: .black.opacity(0.06), radius: 5, x: 0, y: 2)
         }
         .buttonStyle(.plain)
     }
@@ -4127,11 +4183,15 @@ private struct ProductDetailScreen: View {
 
                         Spacer()
 
-                        NotificationBellButton(
-                            unreadCount: appModel.unreadNotificationCount,
-                            size: 30,
-                            action: appModel.openNotifications
-                        )
+                        HStack(spacing: 8) {
+                            ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                            NotificationBellButton(
+                                unreadCount: appModel.unreadNotificationCount,
+                                size: 30,
+                                action: appModel.openNotifications
+                            )
+                        }
                     }
                     .padding(.horizontal, 33)
                     .padding(.top, 22)
@@ -4257,11 +4317,15 @@ private struct AssistantIntroScreen: View {
                 HStack(alignment: .top) {
                     Spacer()
 
-                    NotificationBellButton(
-                        unreadCount: appModel.unreadNotificationCount,
-                        size: 30,
-                        action: appModel.openNotifications
-                    )
+                    HStack(spacing: 8) {
+                        ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                        NotificationBellButton(
+                            unreadCount: appModel.unreadNotificationCount,
+                            size: 30,
+                            action: appModel.openNotifications
+                        )
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
@@ -4293,13 +4357,13 @@ private struct AssistantIntroScreen: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 3) {
-                            Circle().fill(Color.gray.opacity(0.25)).frame(width: 7, height: 7)
-                            Circle().fill(Color.gray.opacity(0.25)).frame(width: 11, height: 11)
-                            Circle().fill(Color.gray.opacity(0.25)).frame(width: 14, height: 14)
+                            Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 7, height: 7)
+                            Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 11, height: 11)
+                            Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 14, height: 14)
                         }
 
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                            .fill(FigmaPalette.palePink.opacity(0.85))
                             .frame(width: 228, height: 56)
                             .overlay(alignment: .leading) {
                                 Text("你好！我是你的 AI 花藝助手。我會按購買類型、對象、場合、顏色與預算逐步推薦。")
@@ -4398,11 +4462,15 @@ private struct AssistantJourneyScreen: View {
 
                         Spacer()
 
-                        NotificationBellButton(
-                            unreadCount: appModel.unreadNotificationCount,
-                            size: 30,
-                            action: appModel.openNotifications
-                        )
+                        HStack(spacing: 8) {
+                            ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                            NotificationBellButton(
+                                unreadCount: appModel.unreadNotificationCount,
+                                size: 30,
+                                action: appModel.openNotifications
+                            )
+                        }
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 18)
@@ -4773,11 +4841,15 @@ private struct CartScreen: View {
 
                         Spacer()
 
-                        NotificationBellButton(
-                            unreadCount: appModel.unreadNotificationCount,
-                            size: 28,
-                            action: appModel.openNotifications
-                        )
+                        HStack(spacing: 8) {
+                            ThemePaletteButton(size: 28, action: appModel.reopenColorOfDayPumpUp)
+
+                            NotificationBellButton(
+                                unreadCount: appModel.unreadNotificationCount,
+                                size: 28,
+                                action: appModel.openNotifications
+                            )
+                        }
                     }
                     .padding(.top, 18)
 
@@ -4860,6 +4932,7 @@ private struct CheckoutScreen: View {
                         showBell: true,
                         unreadNotificationCount: appModel.unreadNotificationCount,
                         onBellTap: appModel.openNotifications,
+                        onPaletteTap: appModel.reopenColorOfDayPumpUp,
                         onBack: appModel.dismissCheckout
                     )
                     .padding(.top, 18)
@@ -5182,11 +5255,15 @@ private struct OrderTrackingScreen: View {
 
                             Spacer()
 
-                            NotificationBellButton(
-                                unreadCount: appModel.unreadNotificationCount,
-                                size: 30,
-                                action: appModel.openNotifications
-                            )
+                            HStack(spacing: 8) {
+                                ThemePaletteButton(size: 30, action: appModel.reopenColorOfDayPumpUp)
+
+                                NotificationBellButton(
+                                    unreadCount: appModel.unreadNotificationCount,
+                                    size: 30,
+                                    action: appModel.openNotifications
+                                )
+                            }
                         }
                         .padding(.top, 18)
 
@@ -6144,7 +6221,7 @@ private struct MainScreenContainer<Content: View>: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Rectangle()
-                    .fill(Color.black.opacity(0.08))
+                    .fill(FigmaPalette.softPink.opacity(0.9))
                     .frame(height: 1)
 
                 FigmaBottomNavBar(selectedTab: selectedTab) { tab in
@@ -6155,9 +6232,9 @@ private struct MainScreenContainer<Content: View>: View {
             }
             .frame(maxWidth: .infinity)
             .background(
-                Color.white
+                FigmaPalette.palePink.opacity(0.45)
                     .ignoresSafeArea(edges: .bottom)
-                    .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: -2)
+                    .shadow(color: FigmaPalette.hotPink.opacity(0.12), radius: 8, x: 0, y: -2)
             )
         }
         .coordinateSpace(name: BottomNavButtonFrameReader.coordinateSpaceName)
@@ -6230,6 +6307,25 @@ private struct NotificationBellButton: View {
     }
 }
 
+private struct ThemePaletteButton: View {
+    var size: CGFloat = 30
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "paintpalette.fill")
+                .font(.system(size: size * 0.82, weight: .bold))
+                .foregroundColor(.black)
+                .frame(width: size + 6, height: size + 4)
+                .background(
+                    Circle()
+                        .fill(FigmaPalette.palePink.opacity(0.62))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct FigmaHeader: View {
     let brand: String
     let title: String
@@ -6238,6 +6334,7 @@ private struct FigmaHeader: View {
     let showBell: Bool
     var unreadNotificationCount = 0
     var onBellTap: (() -> Void)? = nil
+    var onPaletteTap: (() -> Void)? = nil
     let onBack: () -> Void
 
     var body: some View {
@@ -6256,11 +6353,17 @@ private struct FigmaHeader: View {
                 Spacer()
 
                 if showBell {
-                    NotificationBellButton(
-                        unreadCount: unreadNotificationCount,
-                        size: 30,
-                        action: onBellTap ?? {}
-                    )
+                    HStack(spacing: 8) {
+                        if let onPaletteTap {
+                            ThemePaletteButton(size: 30, action: onPaletteTap)
+                        }
+
+                        NotificationBellButton(
+                            unreadCount: unreadNotificationCount,
+                            size: 30,
+                            action: onBellTap ?? {}
+                        )
+                    }
                 }
             }
 
@@ -6580,7 +6683,7 @@ private struct AssistantChoiceButton: View {
     var body: some View {
         Button(action: action) {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(red: 0.95, green: 0.95, blue: 0.95))
+                .fill(FigmaPalette.palePink.opacity(0.72))
                 .frame(width: 154, height: 35)
                 .overlay {
                     Text(title)
@@ -6646,9 +6749,9 @@ private struct AssistantConversationBlock<Content: View>: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 3) {
-                    Circle().fill(Color.gray.opacity(0.25)).frame(width: 7, height: 7)
-                    Circle().fill(Color.gray.opacity(0.25)).frame(width: 11, height: 11)
-                    Circle().fill(Color.gray.opacity(0.25)).frame(width: 14, height: 14)
+                    Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 7, height: 7)
+                    Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 11, height: 11)
+                    Circle().fill(FigmaPalette.softPink.opacity(0.68)).frame(width: 14, height: 14)
                 }
                 .padding(.leading, 6)
 
@@ -6660,7 +6763,7 @@ private struct AssistantConversationBlock<Content: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                            .fill(FigmaPalette.palePink.opacity(0.86))
                     )
 
                 content
@@ -6682,7 +6785,7 @@ private struct AssistantReplyBubble: View {
                 .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(red: 0.95, green: 0.95, blue: 0.95))
+                        .fill(FigmaPalette.palePink.opacity(0.72))
                 )
 
             ZStack {
@@ -6737,7 +6840,7 @@ private struct OptionGrid: View {
             onSelect?(option)
         } label: {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(selection == option ? FigmaPalette.softPink : Color(red: 0.95, green: 0.95, blue: 0.95))
+                .fill(selection == option ? FigmaPalette.softPink : FigmaPalette.palePink.opacity(0.72))
                 .frame(width: isSingle ? 116 : nil, height: 35)
                 .frame(maxWidth: isSingle ? nil : .infinity)
                 .overlay {
@@ -6770,7 +6873,7 @@ private struct TypingIndicatorBubble: View {
 
             HStack(spacing: 10) {
                 ProgressView()
-                    .tint(.black.opacity(0.7))
+                    .tint(FigmaPalette.hotPink.opacity(0.85))
                 Text(text)
                     .font(.system(size: 11, weight: .bold))
             }
@@ -6778,7 +6881,7 @@ private struct TypingIndicatorBubble: View {
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                    .fill(FigmaPalette.palePink.opacity(0.86))
             )
         }
         .padding(.horizontal, 24)
@@ -6805,7 +6908,7 @@ private struct AssistantSummaryBubble: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                .fill(FigmaPalette.palePink.opacity(0.9))
         )
     }
 }
@@ -6915,7 +7018,7 @@ private struct AssistantRecommendationBubble: View {
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 11, weight: .semibold))
                 }
-                .foregroundColor(Color(red: 0.07, green: 0.30, blue: 0.26))
+                .foregroundColor(FigmaPalette.hotPink)
             }
             .buttonStyle(.plain)
             .padding(.top, 2)
@@ -6924,7 +7027,7 @@ private struct AssistantRecommendationBubble: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                .fill(FigmaPalette.palePink.opacity(0.9))
         )
     }
 
@@ -7079,6 +7182,7 @@ private struct DIYBouquetDesignContent: View {
                 DIYFlowHeader(
                     unreadNotificationCount: appModel.unreadNotificationCount,
                     onBellTap: appModel.openNotifications,
+                    onPaletteTap: appModel.reopenColorOfDayPumpUp,
                     onBack: appModel.closeOverlay
                 )
                 DIYProgressSection(
@@ -7438,7 +7542,8 @@ private struct DIYBouquetPreviewContent: View {
             VStack(alignment: .leading, spacing: 18) {
                 DIYFlowHeader(
                     unreadNotificationCount: appModel.unreadNotificationCount,
-                    onBellTap: appModel.openNotifications
+                    onBellTap: appModel.openNotifications,
+                    onPaletteTap: appModel.reopenColorOfDayPumpUp
                 ) {
                     appModel.closeOverlay()
                 }
@@ -7617,6 +7722,7 @@ private struct DIYBouquetPreviewContent: View {
 private struct DIYFlowHeader: View {
     let unreadNotificationCount: Int
     let onBellTap: () -> Void
+    let onPaletteTap: () -> Void
     let onBack: () -> Void
 
     var body: some View {
@@ -7631,11 +7737,15 @@ private struct DIYFlowHeader: View {
 
             Spacer()
 
-            NotificationBellButton(
-                unreadCount: unreadNotificationCount,
-                size: 30,
-                action: onBellTap
-            )
+            HStack(spacing: 8) {
+                ThemePaletteButton(size: 30, action: onPaletteTap)
+
+                NotificationBellButton(
+                    unreadCount: unreadNotificationCount,
+                    size: 30,
+                    action: onBellTap
+                )
+            }
         }
         .overlay(alignment: .leading) {
             VStack(alignment: .leading, spacing: 2) {
@@ -8640,11 +8750,11 @@ private struct SoftInputField: View {
         .frame(height: 42)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(red: 149 / 255, green: 130 / 255, blue: 146 / 255).opacity(0.02))
+                .fill(FigmaPalette.softPink.opacity(0.24))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(red: 167 / 255, green: 137 / 255, blue: 137 / 255).opacity(0.7), lineWidth: 0.5)
+                .stroke(FigmaPalette.hotPink.opacity(0.35), lineWidth: 0.8)
         )
         .shadow(color: .black.opacity(0.10), radius: 10, x: 0, y: 4)
     }
@@ -8661,7 +8771,7 @@ private struct SoftActionButton: View {
                 .fill(isEnabled ? Color.white : FigmaPalette.softPink.opacity(0.4))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(red: 167 / 255, green: 137 / 255, blue: 137 / 255).opacity(0.7), lineWidth: 0.5)
+                        .stroke(FigmaPalette.hotPink.opacity(0.35), lineWidth: 0.8)
                 )
                 .shadow(color: .black.opacity(0.10), radius: 10, x: 0, y: 4)
                 .frame(height: 42)
@@ -8797,7 +8907,7 @@ private struct FigmaBottomNavBar: View {
         .padding(.top, 8)
         .frame(maxWidth: 402)
         .frame(maxWidth: .infinity)
-        .background(Color.white)
+        .background(FigmaPalette.palePink.opacity(0.35))
     }
 
     private var leadingGroups: [[FigmaCustomerAppModel.MainTab]] {
@@ -8853,7 +8963,7 @@ private struct BottomNavGroup: View {
         }
         .padding(.horizontal, horizontalPadding)
         .frame(height: 50)
-        .background(Color.black)
+        .background(FigmaPalette.hotPink)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
@@ -9003,9 +9113,51 @@ private enum GardenImageAsset {
 }
 
 private enum FigmaPalette {
-    static let softPink = Color(red: 1.0, green: 235.0 / 255.0, blue: 252.0 / 255.0)
-    static let palePink = Color(red: 1.0, green: 223.0 / 255.0, blue: 248.0 / 255.0)
-    static let hotPink = Color(red: 211.0 / 255.0, green: 96.0 / 255.0, blue: 149.0 / 255.0)
+    private struct RGBSeed {
+        var red: Double
+        var green: Double
+        var blue: Double
+    }
+
+    private static var seed = RGBSeed(red: 0.33, green: 0.74, blue: 0.48)
+
+    static func applyTheme(_ color: FigmaCustomerAppModel.ColorOfDay) {
+        let rgb = color.rgbComponents
+        seed = RGBSeed(red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
+
+    static func applyNeutralTheme() {
+        seed = RGBSeed(red: 0, green: 0, blue: 0)
+    }
+
+    static var softPink: Color {
+        mixedWithWhite(0.84)
+    }
+
+    static var palePink: Color {
+        mixedWithWhite(0.73)
+    }
+
+    static var hotPink: Color {
+        mixedWithBlack(0.18)
+    }
+
+    private static func mixedWithWhite(_ amount: Double) -> Color {
+        Color(
+            red: seed.red + (1 - seed.red) * amount,
+            green: seed.green + (1 - seed.green) * amount,
+            blue: seed.blue + (1 - seed.blue) * amount
+        )
+    }
+
+    private static func mixedWithBlack(_ amount: Double) -> Color {
+        let scale = 1 - amount
+        return Color(
+            red: seed.red * scale,
+            green: seed.green * scale,
+            blue: seed.blue * scale
+        )
+    }
 }
 
 #Preview {
