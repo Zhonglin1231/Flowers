@@ -172,11 +172,12 @@ final class FigmaCustomerAppModel: ObservableObject {
     }
 
     enum ColorOfDay: String, CaseIterable, Identifiable {
-        case yellow
-        case pink
         case blue
-        case red
+        case purple
+        case pink
         case green
+        case yellow
+        case orange
 
         var id: String {
             rawValue
@@ -188,16 +189,18 @@ final class FigmaCustomerAppModel: ObservableObject {
 
         var rgbComponents: (red: Double, green: Double, blue: Double) {
             switch self {
-            case .yellow:
-                return (1.0, 0.84, 0.22)
-            case .pink:
-                return (0.96, 0.47, 0.73)
             case .blue:
-                return (0.35, 0.58, 0.98)
-            case .red:
-                return (0.95, 0.30, 0.30)
+                return (0.45, 0.67, 0.98) // #73ACFB
+            case .purple:
+                return (0.68, 0.64, 0.95) // #ADA2F2
+            case .pink:
+                return (0.98, 0.75, 0.85) // #FABED8
             case .green:
-                return (0.33, 0.74, 0.48)
+                return (0.78, 0.94, 0.59) // #C7EF96
+            case .yellow:
+                return (0.98, 0.90, 0.46) // #FBE576
+            case .orange:
+                return (0.99, 0.57, 0.42) // #FD916A
             }
         }
 
@@ -208,31 +211,35 @@ final class FigmaCustomerAppModel: ObservableObject {
 
         var meaningText: String {
             switch self {
-            case .yellow:
-                return "Yellow represents warmth and positivity, perfect for cheering someone up."
-            case .pink:
-                return "Pink represents tenderness and affection, great for a thoughtful surprise."
             case .blue:
                 return "Blue represents calm and trust, ideal for peaceful and elegant gifting."
-            case .red:
-                return "Red represents passion and courage, made for heartfelt moments."
+            case .purple:
+                return "Purple represents imagination and grace, great for a dreamy surprise."
+            case .pink:
+                return "Pink represents tenderness and affection, great for a thoughtful surprise."
             case .green:
                 return "Green represents renewal and balance, a fresh way to send care."
+            case .yellow:
+                return "Yellow represents warmth and positivity, perfect for cheering someone up."
+            case .orange:
+                return "Orange represents joy and energy, ideal for lively celebrations."
             }
         }
 
         var bouquetMatchKeywords: [String] {
             switch self {
-            case .yellow:
-                return ["yellow", "gold", "sun", "sunflower", "黃", "向日葵", "暖", "晨曦", "香檳"]
-            case .pink:
-                return ["pink", "blush", "rose", "粉", "柔粉", "浪漫", "甜美"]
             case .blue:
                 return ["blue", "azure", "ocean", "藍", "海", "天空", "繡球"]
-            case .red:
-                return ["red", "ruby", "passion", "紅", "熱情", "玫瑰", "浪漫"]
+            case .purple:
+                return ["purple", "violet", "lavender", "紫", "霧紫", "夢幻", "優雅"]
+            case .pink:
+                return ["pink", "blush", "rose", "粉", "柔粉", "浪漫", "甜美"]
             case .green:
                 return ["green", "garden", "fresh", "綠", "花園", "清新", "葉", "尤加利"]
+            case .yellow:
+                return ["yellow", "gold", "sun", "sunflower", "黃", "向日葵", "暖", "晨曦", "香檳"]
+            case .orange:
+                return ["orange", "coral", "sunset", "橙", "珊瑚", "活力", "暖調"]
             }
         }
     }
