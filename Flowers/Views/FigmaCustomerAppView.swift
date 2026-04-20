@@ -184,7 +184,20 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
 
         var title: String {
-            rawValue.capitalized
+            switch self {
+            case .blue:
+                return "藍色"
+            case .purple:
+                return "紫色"
+            case .pink:
+                return "粉紅"
+            case .green:
+                return "綠色"
+            case .yellow:
+                return "黃色"
+            case .orange:
+                return "橙色"
+            }
         }
 
         var rgbComponents: (red: Double, green: Double, blue: Double) {
@@ -212,17 +225,17 @@ final class FigmaCustomerAppModel: ObservableObject {
         var meaningText: String {
             switch self {
             case .blue:
-                return "Blue represents calm and trust, ideal for peaceful and elegant gifting."
+                return "藍色代表平靜與信任，適合送上溫柔又優雅的心意。"
             case .purple:
-                return "Purple represents imagination and grace, great for a dreamy surprise."
+                return "紫色代表想像與氣質，很適合營造夢幻驚喜。"
             case .pink:
-                return "Pink represents tenderness and affection, great for a thoughtful surprise."
+                return "粉紅代表溫柔與愛意，最適合貼心浪漫的小驚喜。"
             case .green:
-                return "Green represents renewal and balance, a fresh way to send care."
+                return "綠色代表療癒與平衡，帶出清新自然的關懷感。"
             case .yellow:
-                return "Yellow represents warmth and positivity, perfect for cheering someone up."
+                return "黃色代表溫暖與正能量，很適合為對方打打氣。"
             case .orange:
-                return "Orange represents joy and energy, ideal for lively celebrations."
+                return "橙色代表喜悅與活力，特別適合熱鬧歡樂的慶祝時刻。"
             }
         }
 
@@ -1568,6 +1581,7 @@ final class FigmaCustomerAppModel: ObservableObject {
                     self.submittedTrackingOrder = StorefrontTrackingOrder(
                         documentID: submittedOrder.documentID,
                         sourceOrderId: submittedOrder.sourceOrderId,
+                        status: OrderStatus.pending.rawValue,
                         createdAt: submittedOrder.createdAt,
                         pickupDate: pickupDate,
                         pickupLocation: self.checkoutPickupLocation,
@@ -1603,6 +1617,7 @@ final class FigmaCustomerAppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] orders in
                 self?.userOrders = orders
+                self?.syncSubmittedTrackingOrderStatus(with: orders)
             }
             .store(in: &cancellables)
 
@@ -1650,6 +1665,17 @@ final class FigmaCustomerAppModel: ObservableObject {
     private func refreshUserOrders() {
         userOrdersErrorMessage = nil
         orderService.fetchUserOrders()
+    }
+
+    private func syncSubmittedTrackingOrderStatus(with orders: [OrderData]) {
+        guard var trackingOrder = submittedTrackingOrder else { return }
+        guard let latestOrderStatus = orders.first(where: { $0.id == trackingOrder.documentID })?.status else {
+            return
+        }
+
+        guard trackingOrder.status != latestOrderStatus else { return }
+        trackingOrder.status = latestOrderStatus
+        submittedTrackingOrder = trackingOrder
     }
 
     private func loadCurrentUserProfile() {
@@ -2883,6 +2909,7 @@ struct StorefrontTrackingOrder {
 
     let documentID: String
     let sourceOrderId: String
+    var status: String
     let createdAt: Date
     let pickupDate: Date
     let pickupLocation: String
@@ -3555,7 +3582,7 @@ private struct ColorOfDayPumpUpModal: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center) {
-                    Text("What’s your color of the day?")
+                    Text("今日想揀咩顏色？")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundColor(.black)
 
@@ -3647,7 +3674,7 @@ private struct ColorOfDayPumpUpModal: View {
 
             Button(action: spinToDecide) {
                 VStack(spacing: 2) {
-                    Text(isSpinning ? "..." : "SPIN")
+                    Text(isSpinning ? "..." : "轉一轉")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(.white)
 
@@ -3691,7 +3718,7 @@ private struct ColorOfDayPumpUpModal: View {
     private var detailsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Option B: Tap a color directly")
+                Text("或者直接揀顏色")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.black.opacity(0.8))
 
@@ -3736,7 +3763,7 @@ private struct ColorOfDayPumpUpModal: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Today’s color: \(appModel.colorOfTheDay.title)")
+                Text("今日色系：\(appModel.colorOfTheDay.title)")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.black)
 
@@ -3747,7 +3774,7 @@ private struct ColorOfDayPumpUpModal: View {
             }
 
             VStack(alignment: .leading, spacing: 9) {
-                Text("Bouquets for your color")
+                Text("適合你今日色系的花束")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.black)
 
@@ -5390,28 +5417,48 @@ private struct OrderTrackingScreen: View {
         let preparingDate = order.createdAt.addingTimeInterval(60 * 60)
         let readyDate = order.createdAt.addingTimeInterval(110 * 60)
 
-        return [
+        let isPreparingOrAbove = order.status == OrderStatus.preparing.rawValue
+            || order.status == OrderStatus.ready.rawValue
+            || order.status == OrderStatus.delivered.rawValue
+        let isReadyOrAbove = order.status == OrderStatus.ready.rawValue
+            || order.status == OrderStatus.delivered.rawValue
+        let isDelivered = order.status == OrderStatus.delivered.rawValue
+        let isCancelled = order.status == OrderStatus.cancelled.rawValue
+
+        var steps = [
             TrackingStep(
                 title: "系統接收到訂單 · \(timeText(from: order.createdAt))",
-                subtitle: "你的訂單已確認",
+                subtitle: "你的訂單已建立，正在等待門店處理",
                 isCompleted: true
             ),
             TrackingStep(
                 title: "花束準備中 · \(timeText(from: preparingDate))",
                 subtitle: "花藝師正在製作你的花束",
-                isCompleted: true
+                isCompleted: isPreparingOrAbove
             ),
             TrackingStep(
                 title: "可到店取貨 · \(timeText(from: readyDate))",
                 subtitle: "你可以到店取花，取單號碼\(order.sourceOrderId.replacingOccurrences(of: "#", with: ""))",
-                isCompleted: true
+                isCompleted: isReadyOrAbove
             ),
             TrackingStep(
                 title: "已取貨",
                 subtitle: "預計取貨時間：\(order.pickupWindowText)",
-                isCompleted: false
+                isCompleted: isDelivered
             )
         ]
+
+        if isCancelled {
+            steps.append(
+                TrackingStep(
+                    title: "訂單已取消",
+                    subtitle: "如已付款，款項會按付款方式原路返回。",
+                    isCompleted: true
+                )
+            )
+        }
+
+        return steps
     }
 
     private func timeText(from date: Date) -> String {
@@ -5452,7 +5499,7 @@ private struct OrderTrackingSummaryCard: View {
                     }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    OrderStatusBadge(statusText: "待取貨")
+                    OrderStatusBadge(statusText: order.status)
 
                     Text(order.title)
                         .font(.system(size: 22, weight: .bold))
