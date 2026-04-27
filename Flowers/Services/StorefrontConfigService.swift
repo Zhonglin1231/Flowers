@@ -26,6 +26,7 @@ struct InventoryRecordData: Identifiable, Equatable {
 struct StorefrontPreviewConfiguration: Equatable {
     let apiKey: String?
     let modelName: String?
+    let imageSize: String?
     let assistantApiKey: String?
     let assistantModelName: String?
     let assistantReasoningEffort: String?
@@ -44,6 +45,12 @@ struct StorefrontPreviewConfiguration: Equatable {
             data["modelName"],
             data["imageModel"],
             data["arkImageModel"]
+        )
+        self.imageSize = StorefrontPreviewConfiguration.firstNonEmptyString(
+            data["imageSize"],
+            data["previewImageSize"],
+            data["arkImageSize"],
+            data["size"]
         )
         self.assistantApiKey = StorefrontPreviewConfiguration.firstNonEmptyString(
             data["assistantApiKey"],

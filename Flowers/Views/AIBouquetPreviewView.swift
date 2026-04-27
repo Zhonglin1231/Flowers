@@ -147,6 +147,13 @@ struct AIBouquetPreviewView: View {
                     .background(Color.white)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 
+                TextField("图片尺寸，例如 2560x1440", text: $aiViewModel.imageSize)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding()
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                
                 Text("支持直接粘贴 key 本身，也支持整行 `Bearer ...` 或 `Authorization: Bearer ...`；界面会自动清洗。")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -316,7 +323,7 @@ struct AIBouquetPreviewView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     
-                    Text("模型：\(preview.modelName)")
+                    Text("模型：\(preview.modelName)｜尺寸：\(preview.imageSize)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     

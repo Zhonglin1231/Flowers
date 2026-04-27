@@ -157,12 +157,19 @@ final class FigmaCustomerAppModel: ObservableObject {
     enum OverlayScreen {
         case productDetail
         case assistantJourney
+        case flowerCharacterTest
         case farm
         case checkout
         case orderTracking
         case orderHistory
         case editProfile
         case notifications
+    }
+
+    enum FlowerCharacterStage {
+        case intro
+        case quiz
+        case result
     }
 
     enum AssistantFlowStage: Equatable {
@@ -242,7 +249,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         var bouquetMatchKeywords: [String] {
             switch self {
             case .blue:
-                return ["blue", "azure", "ocean", "藍", "海", "天空", "繡球"]
+                return ["blue", "azure", "ocean", "藍", "蓝", "海", "天空", "繡球", "绣球", "碎冰蓝"]
             case .purple:
                 return ["purple", "violet", "lavender", "紫", "霧紫", "夢幻", "優雅"]
             case .pink:
@@ -289,6 +296,9 @@ final class FigmaCustomerAppModel: ObservableObject {
             syncThemePalette()
         }
     }
+    @Published var flowerCharacterStage: FlowerCharacterStage = .intro
+    @Published var flowerCharacterQuestionIndex = 0
+    @Published var flowerCharacterScores: [Int] = []
     @Published private(set) var hasChosenColorOfDay = false
     @Published private(set) var isShowingColorOfDayPumpUp = false
     @Published var selectedBudget = "港幣100-200元"
@@ -314,6 +324,7 @@ final class FigmaCustomerAppModel: ObservableObject {
     @Published var showPreviewDisclaimer = false
     @Published var apiKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
     @Published var modelName = ProcessInfo.processInfo.environment["ARK_IMAGE_MODEL"] ?? "doubao-seedream-4-0-250828"
+    @Published var imageSize = ProcessInfo.processInfo.environment["ARK_IMAGE_SIZE"] ?? AIBouquetPreviewService.defaultImageSize
     @Published var assistantAPIKey = ProcessInfo.processInfo.environment["ARK_API_KEY"] ?? ""
     @Published var assistantModelName = ProcessInfo.processInfo.environment["ARK_CHAT_MODEL"] ?? "doubao-seed-2-0-mini-260215"
     @Published var assistantReasoningEffort = ProcessInfo.processInfo.environment["ARK_CHAT_REASONING_EFFORT"] ?? "minimal"
@@ -507,6 +518,40 @@ final class FigmaCustomerAppModel: ObservableObject {
         }
 
         return Array(sourceProducts.prefix(4))
+    }
+
+    var flowerCharacterQuestionCount: Int {
+        FlowerCharacterContent.questions.count
+    }
+
+    var currentFlowerCharacterQuestion: FlowerCharacterQuestion {
+        let safeIndex = min(
+            max(flowerCharacterQuestionIndex, 0),
+            max(FlowerCharacterContent.questions.count - 1, 0)
+        )
+        return FlowerCharacterContent.questions[safeIndex]
+    }
+
+    var flowerCharacterProgressText: String {
+        "\(min(flowerCharacterQuestionIndex + 1, flowerCharacterQuestionCount))/\(flowerCharacterQuestionCount)"
+    }
+
+    var flowerCharacterProgressFraction: CGFloat {
+        guard flowerCharacterQuestionCount > 0 else { return 0 }
+        return CGFloat(min(flowerCharacterQuestionIndex + 1, flowerCharacterQuestionCount))
+            / CGFloat(flowerCharacterQuestionCount)
+    }
+
+    var flowerCharacterTotalScore: Int {
+        flowerCharacterScores.reduce(0, +)
+    }
+
+    var flowerCharacterResult: FlowerCharacterResult {
+        guard flowerCharacterStage == .result else {
+            return FlowerCharacterContent.introResult
+        }
+
+        return FlowerCharacterContent.result(for: flowerCharacterTotalScore)
     }
 
     var homeFlowerStripImageURLs: [String] {
@@ -1047,6 +1092,53 @@ final class FigmaCustomerAppModel: ObservableObject {
         scheduleDIYAssistantGuideIfNeeded()
     }
 
+    func openFlowerCharacterTest() {
+        activeTab = .home
+        resetFlowerCharacterTest()
+        overlayScreen = .flowerCharacterTest
+    }
+
+    func startFlowerCharacterTest() {
+        resetFlowerCharacterTest()
+        flowerCharacterStage = .quiz
+    }
+
+    func chooseFlowerCharacterOption(_ choice: FlowerCharacterChoice) {
+        guard flowerCharacterStage == .quiz else { return }
+        guard flowerCharacterQuestionIndex < flowerCharacterQuestionCount else { return }
+
+        flowerCharacterScores.append(choice.score)
+
+        if flowerCharacterQuestionIndex >= flowerCharacterQuestionCount - 1 {
+            flowerCharacterStage = .result
+        } else {
+            flowerCharacterQuestionIndex += 1
+        }
+    }
+
+    func navigateBackInFlowerCharacterTest() {
+        switch flowerCharacterStage {
+        case .intro:
+            overlayScreen = nil
+        case .quiz:
+            if flowerCharacterQuestionIndex == 0 {
+                resetFlowerCharacterTest()
+            } else {
+                flowerCharacterQuestionIndex -= 1
+                if !flowerCharacterScores.isEmpty {
+                    flowerCharacterScores.removeLast()
+                }
+            }
+        case .result:
+            overlayScreen = nil
+        }
+    }
+
+    func restartFlowerCharacterTest() {
+        resetFlowerCharacterTest()
+        flowerCharacterStage = .intro
+    }
+
     func openFarm() {
         activeTab = .profile
         overlayScreen = .farm
@@ -1473,6 +1565,7 @@ final class FigmaCustomerAppModel: ObservableObject {
                 wrappingOption: selectedWrappingOption,
                 apiKey: apiKey,
                 modelName: modelName,
+                imageSize: imageSize,
                 requireReferenceImages: true
             )
             assistantFlowStage = .preview
@@ -1764,6 +1857,10 @@ final class FigmaCustomerAppModel: ObservableObject {
                 if let modelName = config.modelName {
                     self.modelName = modelName
                 }
+                
+                if let imageSize = config.imageSize {
+                    self.imageSize = imageSize
+                }
 
                 if let assistantApiKey = config.assistantApiKey {
                     self.assistantAPIKey = assistantApiKey
@@ -1886,6 +1983,7 @@ final class FigmaCustomerAppModel: ObservableObject {
         isShowingColorOfDayPumpUp = false
         resetAssistantSelections()
         resetDIYFlow()
+        resetFlowerCharacterTest()
         resetAssistantChat()
     }
 
@@ -1929,6 +2027,12 @@ final class FigmaCustomerAppModel: ObservableObject {
         previewErrorMessage = nil
         isGeneratingPreview = false
         showPreviewDisclaimer = false
+    }
+
+    private func resetFlowerCharacterTest() {
+        flowerCharacterStage = .intro
+        flowerCharacterQuestionIndex = 0
+        flowerCharacterScores = []
     }
 
     private var preferredDIYCategory: FlowerCategory? {
@@ -3026,6 +3130,8 @@ private struct MainFlowScreen: View {
                 ProductDetailScreen(appModel: appModel)
             case .assistantJourney:
                 AssistantJourneyScreen(appModel: appModel)
+            case .flowerCharacterTest:
+                FlowerCharacterTestScreen(appModel: appModel)
             case .farm:
                 FarmScreen(appModel: appModel)
             case .checkout:
@@ -3418,6 +3524,10 @@ private struct HomeScreen: View {
                     }
                     .padding(.top, 8)
 
+                    FlowerCharacterEntryCard {
+                        appModel.openFlowerCharacterTest()
+                    }
+
                     VStack(alignment: .leading, spacing: 12) {
                         Text("前往瀏覽鮮花")
                             .font(.system(size: 16, weight: .bold))
@@ -3561,6 +3671,504 @@ private struct HomeScreen: View {
         .onReceive(featuredAutoplayTimer) { _ in
             appModel.showNextFeaturedProduct()
         }
+    }
+}
+
+private struct FlowerCharacterEntryCard: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .trailing) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.97, blue: 0.94),
+                                Color(red: 0.96, green: 0.90, blue: 0.88)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                    )
+
+                FlowerCharacterBloom(result: FlowerCharacterContent.introResult)
+                    .scaleEffect(0.44)
+                    .frame(width: 146, height: 130)
+                    .offset(x: 18, y: 12)
+                    .allowsHitTesting(false)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("花朵人格")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundColor(.black)
+
+                    Text("15 道題探索你的花朵原型")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.black.opacity(0.62))
+                        .lineLimit(2)
+
+                    HStack(spacing: 8) {
+                        Text("開始測試")
+                            .font(.system(size: 13, weight: .bold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .frame(height: 34)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.black.opacity(0.88))
+                    )
+                    .padding(.top, 2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 20)
+                .padding(.trailing, 138)
+            }
+            .frame(height: 128)
+            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FlowerCharacterTestScreen: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        ZStack {
+            FlowerCharacterScreenBackground(result: appModel.flowerCharacterResult)
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    FlowerCharacterTopBar(
+                        showShare: appModel.flowerCharacterStage == .result,
+                        shareText: appModel.flowerCharacterResult.shareText(totalScore: appModel.flowerCharacterTotalScore),
+                        onBack: appModel.navigateBackInFlowerCharacterTest
+                    )
+                    .padding(.top, 18)
+
+                    switch appModel.flowerCharacterStage {
+                    case .intro:
+                        FlowerCharacterIntroView {
+                            appModel.startFlowerCharacterTest()
+                        }
+                    case .quiz:
+                        FlowerCharacterQuestionView(appModel: appModel)
+                    case .result:
+                        FlowerCharacterResultView(appModel: appModel)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 34)
+                .frame(maxWidth: 402)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(Color.white)
+    }
+}
+
+private struct FlowerCharacterTopBar: View {
+    let showShare: Bool
+    let shareText: String
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.black)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            if showShare {
+                ShareLink(item: shareText) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.black)
+                        .frame(width: 32, height: 32)
+                }
+            } else {
+                Color.clear
+                    .frame(width: 32, height: 32)
+            }
+        }
+    }
+}
+
+private struct FlowerCharacterIntroView: View {
+    let onStart: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                Text("花朵人格")
+                    .font(.system(size: 36, weight: .regular, design: .serif))
+                    .foregroundColor(.black)
+
+                Text("FLOWERFUL SELF")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.black.opacity(0.55))
+            }
+            .padding(.top, 22)
+
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(red: 0.99, green: 0.93, blue: 0.92))
+
+                FlowerCharacterBloom(result: FlowerCharacterContent.introResult)
+                    .scaleEffect(0.88)
+                    .offset(y: 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color.black)
+                        .frame(width: 8, height: 8)
+                    Text("探索你的花朵原型")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.black)
+                }
+                .padding(.horizontal, 18)
+                .frame(height: 45)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(0.52))
+                )
+                .padding(.bottom, 27)
+            }
+            .frame(height: 356)
+            .padding(.top, 36)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("探索你的花朵原型")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.black)
+
+                Text("通過 15 道題，發現你內在的花朵人格。是靜默的茉莉花，還是熱烈的向日葵？每一種花朵，都藏著一種生存的智慧。")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.black.opacity(0.72))
+                    .lineSpacing(7)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 38)
+
+            Button(action: onStart) {
+                HStack(spacing: 14) {
+                    Text("開始探索")
+                        .font(.system(size: 19, weight: .bold))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 60)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(0.88))
+                )
+                .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 30)
+        }
+    }
+}
+
+private struct FlowerCharacterQuestionView: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+
+    var body: some View {
+        let question = appModel.currentFlowerCharacterQuestion
+
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                Text("FLOWER CHARACTER TEST")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black.opacity(0.52))
+
+                Text(appModel.flowerCharacterProgressText)
+                    .font(.system(size: 28, weight: .regular, design: .serif))
+                    .foregroundColor(.black)
+            }
+            .padding(.top, 22)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(Color.black.opacity(0.08))
+                    Capsule(style: .continuous)
+                        .fill(question.accent.opacity(0.9))
+                        .frame(width: max(8, proxy.size.width * appModel.flowerCharacterProgressFraction))
+                }
+            }
+            .frame(height: 8)
+            .padding(.top, 22)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text(question.title)
+                    .font(.system(size: 25, weight: .bold))
+                    .foregroundColor(.black)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("選擇最接近你直覺的一項")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.black.opacity(0.55))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 36)
+
+            VStack(spacing: 12) {
+                ForEach(question.choices) { choice in
+                    FlowerCharacterChoiceButton(
+                        choice: choice,
+                        accent: question.accent
+                    ) {
+                        appModel.chooseFlowerCharacterOption(choice)
+                    }
+                }
+            }
+            .padding(.top, 26)
+
+            Spacer(minLength: 20)
+        }
+    }
+}
+
+private struct FlowerCharacterChoiceButton: View {
+    let choice: FlowerCharacterChoice
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 14) {
+                Text(choice.letter)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        Circle()
+                            .fill(accent.opacity(0.86))
+                    )
+
+                Text(choice.text)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.black)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.88))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(accent.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: accent.opacity(0.08), radius: 9, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FlowerCharacterResultView: View {
+    @ObservedObject var appModel: FigmaCustomerAppModel
+    @State private var isShowingResultInfo = false
+
+    private var result: FlowerCharacterResult {
+        appModel.flowerCharacterResult
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 5) {
+                Text("FLOWER CHARACTER TEST")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black.opacity(0.54))
+
+                Text(result.chineseName)
+                    .font(.system(size: 39, weight: .regular, design: .serif))
+                    .foregroundColor(.black)
+
+                Text(result.englishName)
+                    .font(.system(size: 28, weight: .light, design: .serif))
+                    .italic()
+                    .foregroundColor(result.accent)
+
+                Text(result.epithet)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.black.opacity(0.72))
+            }
+            .padding(.top, 8)
+
+            FlowerCharacterBloom(result: result)
+                .frame(height: 306)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("你的人格")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(result.accent)
+
+                    Spacer()
+
+                    Button {
+                        isShowingResultInfo = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundColor(.black.opacity(0.58))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("了解人格結果如何生成")
+                }
+
+                Text(result.summary)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.black.opacity(0.76))
+                    .lineSpacing(7)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.9))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(result.accent.opacity(0.55), lineWidth: 1.2)
+            )
+
+            HStack(spacing: 12) {
+                FlowerCharacterTraitCard(
+                    iconName: "person.2.fill",
+                    title: result.companionTitle,
+                    bodyText: result.companionText,
+                    accent: result.accent
+                )
+
+                FlowerCharacterTraitCard(
+                    iconName: "magnifyingglass.circle",
+                    title: result.growthTitle,
+                    bodyText: result.growthText,
+                    accent: result.accent
+                )
+            }
+            .padding(.top, 14)
+
+            ShareLink(item: result.shareText(totalScore: appModel.flowerCharacterTotalScore)) {
+                HStack(spacing: 10) {
+                    Image(systemName: "bookmark")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("生成分享書籤")
+                        .font(.system(size: 17, weight: .bold))
+                }
+                .foregroundColor(result.prefersDarkAction ? .white : .black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(result.prefersDarkAction ? Color.black.opacity(0.86) : Color.white.opacity(0.78))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(result.prefersDarkAction ? Color.clear : Color.black.opacity(0.48), lineWidth: 1)
+                )
+            }
+            .padding(.top, 16)
+
+            Button(action: appModel.restartFlowerCharacterTest) {
+                Text("重新測試")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.black.opacity(0.48))
+                    .frame(height: 40)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+        }
+        .alert("花朵人格如何生成？", isPresented: $isShowingResultInfo) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("每一道題都會轉化為 1 至 4 的人格傾向分值。不同選擇會讓分數走向不同花朵特質，最後在 8 種花朵人格中，找到最貼近你的那一種。")
+        }
+    }
+}
+
+private struct FlowerCharacterTraitCard: View {
+    let iconName: String
+    let title: String
+    let bodyText: String
+    let accent: Color
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 30, weight: .regular))
+                .foregroundColor(accent)
+                .frame(height: 32)
+
+            Text(title)
+                .font(.system(size: 16, weight: .bold, design: .serif))
+                .foregroundColor(.black)
+
+            Rectangle()
+                .fill(Color.black.opacity(0.22))
+                .frame(width: 18, height: 1)
+
+            Text(bodyText)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.black.opacity(0.68))
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.62))
+        )
+    }
+}
+
+private struct FlowerCharacterScreenBackground: View {
+    let result: FlowerCharacterResult
+
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color.white,
+                result.background.opacity(0.45),
+                Color.white
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .ignoresSafeArea()
     }
 }
 
@@ -9144,6 +9752,814 @@ private struct DIYAssistantGuideOverlay: View {
                 handOffset = 10
             }
         }
+    }
+}
+
+struct FlowerCharacterChoice: Identifiable {
+    let letter: String
+    let text: String
+    let score: Int
+
+    var id: String {
+        letter
+    }
+}
+
+struct FlowerCharacterQuestion: Identifiable {
+    let id: Int
+    let title: String
+    let choices: [FlowerCharacterChoice]
+    let accent: Color
+}
+
+enum FlowerCharacterBloomStyle {
+    case snowdrop
+    case lilyOfTheValley
+    case daisy
+    case jasmine
+    case sunflower
+    case rose
+    case lily
+    case peony
+}
+
+struct FlowerCharacterResult: Identifiable {
+    let id: String
+    let chineseName: String
+    let englishName: String
+    let epithet: String
+    let scoreRangeLabel: String
+    let summary: String
+    let companionTitle: String
+    let companionText: String
+    let growthTitle: String
+    let growthText: String
+    let accent: Color
+    let secondary: Color
+    let background: Color
+    let center: Color
+    let bloomStyle: FlowerCharacterBloomStyle
+    let prefersDarkAction: Bool
+
+    func shareText(totalScore: Int) -> String {
+        "我的花朵人格是\(chineseName) \(englishName)：\(epithet)。得分 \(totalScore)，\(summary)"
+    }
+}
+
+enum FlowerCharacterContent {
+    static let introResult = FlowerCharacterResult(
+        id: "jasmine-intro",
+        chineseName: "茉莉",
+        englishName: "Jasmine",
+        epithet: "靜香的療癒者",
+        scoreRangeLabel: "36-42 分",
+        summary: "你溫柔、細膩，也擅長在安靜中照顧他人的情緒。你不需要喧嘩，存在本身就帶著安定感。",
+        companionTitle: "同行之光",
+        companionText: "能接住情緒、願意慢慢靠近的人",
+        growthTitle: "成長之鏡",
+        growthText: "提醒你保留界線，不必事事承擔的人",
+        accent: Color(red: 0.63, green: 0.66, blue: 0.42),
+        secondary: Color(red: 0.91, green: 0.87, blue: 0.70),
+        background: Color(red: 1.0, green: 0.94, blue: 0.93),
+        center: Color(red: 0.94, green: 0.72, blue: 0.40),
+        bloomStyle: .jasmine,
+        prefersDarkAction: true
+    )
+
+    static let questions: [FlowerCharacterQuestion] = [
+        q(
+            1,
+            "周末你更願意如何度過？",
+            [
+                c("A", "和朋友聚會、逛街或派對", 4),
+                c("B", "一個人看書、聽音樂或發呆", 2),
+                c("C", "去大自然中散步、爬山或拍照", 3),
+                c("D", "學習新技能或完成工作項目", 1)
+            ],
+            Color(red: 0.91, green: 0.55, blue: 0.30)
+        ),
+        q(
+            2,
+            "你最喜歡的顏色系是？",
+            [
+                c("A", "紅、橙、粉等暖色", 4),
+                c("B", "藍、紫、白等冷色", 2),
+                c("C", "綠、棕、米等自然色", 3),
+                c("D", "黑、灰、銀等簡約色", 1)
+            ],
+            Color(red: 0.84, green: 0.46, blue: 0.64)
+        ),
+        q(
+            3,
+            "面對困難時，你通常會？",
+            [
+                c("A", "立刻找人幫忙或傾訴", 4),
+                c("B", "自己冷靜分析，慢慢解決", 2),
+                c("C", "先接受情緒，再找辦法", 3),
+                c("D", "硬扛，不輕易示弱", 1)
+            ],
+            Color(red: 0.55, green: 0.66, blue: 0.45)
+        ),
+        q(
+            4,
+            "在人群中，你常扮演什麼角色？",
+            [
+                c("A", "活躍氣氛的人", 4),
+                c("B", "安靜的觀察者", 2),
+                c("C", "溫和的協調者", 3),
+                c("D", "有主見的領導者", 1)
+            ],
+            Color(red: 0.93, green: 0.63, blue: 0.24)
+        ),
+        q(
+            5,
+            "你更喜歡哪種藝術風格？",
+            [
+                c("A", "浪漫、夢幻的油畫", 4),
+                c("B", "簡約、乾淨的素描", 2),
+                c("C", "活潑、色彩豐富的插畫", 3),
+                c("D", "抽象、有衝擊力的現代藝術", 1)
+            ],
+            Color(red: 0.70, green: 0.53, blue: 0.77)
+        ),
+        q(
+            6,
+            "別人通常如何形容你？",
+            [
+                c("A", "熱情、開朗", 4),
+                c("B", "溫柔、細膩", 3),
+                c("C", "冷靜、理性", 2),
+                c("D", "獨立、堅定", 1)
+            ],
+            Color(red: 0.87, green: 0.48, blue: 0.45)
+        ),
+        q(
+            7,
+            "你理想的愛情是？",
+            [
+                c("A", "轟轟烈烈，像電影一樣", 4),
+                c("B", "細水長流，彼此陪伴", 3),
+                c("C", "精神共鳴，靈魂伴侶", 2),
+                c("D", "各自獨立，互相成就", 1)
+            ],
+            Color(red: 0.82, green: 0.36, blue: 0.48)
+        ),
+        q(
+            8,
+            "你更在意什麼？",
+            [
+                c("A", "被大家喜歡", 4),
+                c("B", "內心平靜", 3),
+                c("C", "自我成長", 2),
+                c("D", "掌控生活", 1)
+            ],
+            Color(red: 0.48, green: 0.67, blue: 0.60)
+        ),
+        q(
+            9,
+            "你的社交方式是？",
+            [
+                c("A", "主動認識很多人", 4),
+                c("B", "只和少數人深交", 3),
+                c("C", "看心情，隨緣", 2),
+                c("D", "避免無效社交", 1)
+            ],
+            Color(red: 0.78, green: 0.54, blue: 0.32)
+        ),
+        q(
+            10,
+            "你更向往哪種生活狀態？",
+            [
+                c("A", "熱鬧有趣，每天不重樣", 4),
+                c("B", "安靜愜意，有自然為伴", 3),
+                c("C", "充實高效，不斷進步", 2),
+                c("D", "自由灑脫，不受約束", 1)
+            ],
+            Color(red: 0.57, green: 0.67, blue: 0.43)
+        ),
+        q(
+            11,
+            "你最容易因為什麼感到快樂？",
+            [
+                c("A", "和朋友在一起的時刻", 4),
+                c("B", "一個人沉浸在興趣中", 3),
+                c("C", "完成一件有挑戰的事", 2),
+                c("D", "探索未知的地方或想法", 1)
+            ],
+            Color(red: 0.93, green: 0.71, blue: 0.18)
+        ),
+        q(
+            12,
+            "你覺得自己的「缺點」更像？",
+            [
+                c("A", "太情緒化，容易衝動", 4),
+                c("B", "太敏感，容易多想", 3),
+                c("C", "太固執，不願妥協", 2),
+                c("D", "太疏離，不擅表達感情", 1)
+            ],
+            Color(red: 0.75, green: 0.42, blue: 0.54)
+        ),
+        q(
+            13,
+            "你最喜歡的季節是？",
+            [
+                c("A", "春天", 4),
+                c("B", "夏天", 3),
+                c("C", "秋天", 2),
+                c("D", "冬天", 1)
+            ],
+            Color(red: 0.62, green: 0.71, blue: 0.43)
+        ),
+        q(
+            14,
+            "面對選擇，你往往會？",
+            [
+                c("A", "猶豫糾結，怕選錯", 4),
+                c("B", "參考他人意見再決定", 3),
+                c("C", "憑感覺快速做決定", 2),
+                c("D", "理性權衡後果斷選擇", 1)
+            ],
+            Color(red: 0.64, green: 0.52, blue: 0.72)
+        ),
+        q(
+            15,
+            "收到不喜歡的禮物，你通常會？",
+            [
+                c("A", "當場開心收下，不讓對方尷尬", 4),
+                c("B", "禮貌收下，心裡默默放一邊", 3),
+                c("C", "委婉表達想法，不勉強自己", 2),
+                c("D", "直接說明不太適合，簡單直白", 1)
+            ],
+            Color(red: 0.60, green: 0.61, blue: 0.50)
+        )
+    ]
+
+    static let results: [ClosedRange<Int>: FlowerCharacterResult] = [
+        15...21: FlowerCharacterResult(
+            id: "snowdrop",
+            chineseName: "雪滴花",
+            englishName: "Snowdrop",
+            epithet: "靜默的守光者",
+            scoreRangeLabel: "15-21 分",
+            summary: "你安靜、優雅且低調，喜歡保留自己的節奏。你的內在世界細膩而清醒，常在不張揚的地方給人溫柔的安定感。",
+            companionTitle: "同行之光",
+            companionText: "尊重安靜、能給你空間的人",
+            growthTitle: "成長之鏡",
+            growthText: "提醒你被看見也很安全的人",
+            accent: Color(red: 0.50, green: 0.62, blue: 0.58),
+            secondary: Color(red: 0.86, green: 0.93, blue: 0.88),
+            background: Color(red: 0.94, green: 0.98, blue: 0.95),
+            center: Color(red: 0.84, green: 0.70, blue: 0.35),
+            bloomStyle: .snowdrop,
+            prefersDarkAction: true
+        ),
+        22...28: FlowerCharacterResult(
+            id: "lily-of-the-valley",
+            chineseName: "鈴蘭",
+            englishName: "Lily of the Valley",
+            epithet: "柔白的真心者",
+            scoreRangeLabel: "22-28 分",
+            summary: "你純粹、善良，也有柔軟裡的力量。你珍惜真誠與安全感，不喜歡複雜的人際關係，會用安靜的方式守住自己。",
+            companionTitle: "同行之光",
+            companionText: "溫柔可靠、慢慢建立信任的人",
+            growthTitle: "成長之鏡",
+            growthText: "鼓勵你把需求說出口的人",
+            accent: Color(red: 0.48, green: 0.65, blue: 0.43),
+            secondary: Color(red: 0.86, green: 0.93, blue: 0.78),
+            background: Color(red: 0.96, green: 0.99, blue: 0.93),
+            center: Color(red: 0.86, green: 0.72, blue: 0.30),
+            bloomStyle: .lilyOfTheValley,
+            prefersDarkAction: true
+        ),
+        29...35: FlowerCharacterResult(
+            id: "daisy",
+            chineseName: "雛菊",
+            englishName: "Daisy",
+            epithet: "溫暖的同行者",
+            scoreRangeLabel: "29-35 分",
+            summary: "你溫暖、好相處，也很懂得照顧別人的感受。你像日常裡的小陽光，不搶眼，卻總能讓身邊的人感到輕鬆。",
+            companionTitle: "同行之光",
+            companionText: "和你一起把平凡日子過亮的人",
+            growthTitle: "成長之鏡",
+            growthText: "提醒你不要總是先照顧別人的人",
+            accent: Color(red: 0.91, green: 0.68, blue: 0.22),
+            secondary: Color(red: 0.95, green: 0.87, blue: 0.48),
+            background: Color(red: 1.0, green: 0.97, blue: 0.89),
+            center: Color(red: 0.94, green: 0.68, blue: 0.14),
+            bloomStyle: .daisy,
+            prefersDarkAction: true
+        ),
+        36...42: introResult,
+        43...49: FlowerCharacterResult(
+            id: "sunflower",
+            chineseName: "向日葵",
+            englishName: "Sunflower",
+            epithet: "群體的向光者",
+            scoreRangeLabel: "43-49 分",
+            summary: "你並非盲目追隨光源，而是善於把小花聚成花盤，形成比太陽更小的太陽。你的力量在群體中放大，在相互照亮中完成一場盛大的朝向。",
+            companionTitle: "同行之光",
+            companionText: "溫暖可靠、願意一起創造美好回憶的人",
+            growthTitle: "成長之鏡",
+            growthText: "幫助你專注與落實、實現目標的人",
+            accent: Color(red: 0.95, green: 0.58, blue: 0.06),
+            secondary: Color(red: 1.0, green: 0.86, blue: 0.25),
+            background: Color(red: 1.0, green: 0.96, blue: 0.78),
+            center: Color(red: 0.22, green: 0.14, blue: 0.06),
+            bloomStyle: .sunflower,
+            prefersDarkAction: false
+        ),
+        50...54: FlowerCharacterResult(
+            id: "rose",
+            chineseName: "玫瑰",
+            englishName: "Rose",
+            epithet: "熱烈的魅力者",
+            scoreRangeLabel: "50-54 分",
+            summary: "你熱情、自信且有吸引力，兼具柔軟與鋒芒。你追求美、浪漫與真實表達，願意用自己的方式鮮明地盛放。",
+            companionTitle: "同行之光",
+            companionText: "欣賞你熱烈、也尊重你邊界的人",
+            growthTitle: "成長之鏡",
+            growthText: "提醒你慢下來聽見內心的人",
+            accent: Color(red: 0.78, green: 0.20, blue: 0.30),
+            secondary: Color(red: 0.96, green: 0.52, blue: 0.60),
+            background: Color(red: 1.0, green: 0.92, blue: 0.94),
+            center: Color(red: 0.95, green: 0.62, blue: 0.25),
+            bloomStyle: .rose,
+            prefersDarkAction: true
+        ),
+        55...58: FlowerCharacterResult(
+            id: "lily",
+            chineseName: "百合",
+            englishName: "Lily",
+            epithet: "清醒的優雅者",
+            scoreRangeLabel: "55-58 分",
+            summary: "你優雅、獨立且清楚自己要什麼。你有自己的原則，比起外界熱鬧，更在意精神上的豐盈與內在秩序。",
+            companionTitle: "同行之光",
+            companionText: "能理解你的品味與分寸的人",
+            growthTitle: "成長之鏡",
+            growthText: "讓你偶爾放鬆、不必總是完美的人",
+            accent: Color(red: 0.64, green: 0.60, blue: 0.76),
+            secondary: Color(red: 0.88, green: 0.84, blue: 0.96),
+            background: Color(red: 0.97, green: 0.95, blue: 1.0),
+            center: Color(red: 0.86, green: 0.54, blue: 0.24),
+            bloomStyle: .lily,
+            prefersDarkAction: true
+        ),
+        59...60: FlowerCharacterResult(
+            id: "peony",
+            chineseName: "牡丹",
+            englishName: "Peony",
+            epithet: "天生的綻放者",
+            scoreRangeLabel: "59-60 分",
+            summary: "你天生擁有吸引人的氣場與魅力，自信而大方。你渴望豐盛的愛與美好，也值得擁有這一切；你的人生，注定綻放。",
+            companionTitle: "同行之光",
+            companionText: "能欣賞你光芒，並真心對待你的人",
+            growthTitle: "成長之鏡",
+            growthText: "提醒你內在豐盛，不需要外在證明的人",
+            accent: Color(red: 0.80, green: 0.35, blue: 0.49),
+            secondary: Color(red: 0.98, green: 0.62, blue: 0.70),
+            background: Color(red: 1.0, green: 0.92, blue: 0.95),
+            center: Color(red: 0.94, green: 0.62, blue: 0.20),
+            bloomStyle: .peony,
+            prefersDarkAction: true
+        )
+    ]
+
+    static func result(for score: Int) -> FlowerCharacterResult {
+        let normalizedScore = min(max(score, 15), 60)
+        return results.first { range, _ in
+            range.contains(normalizedScore)
+        }?.value ?? introResult
+    }
+
+    private static func q(
+        _ id: Int,
+        _ title: String,
+        _ choices: [FlowerCharacterChoice],
+        _ accent: Color
+    ) -> FlowerCharacterQuestion {
+        FlowerCharacterQuestion(id: id, title: title, choices: choices, accent: accent)
+    }
+
+    private static func c(_ letter: String, _ text: String, _ score: Int) -> FlowerCharacterChoice {
+        FlowerCharacterChoice(letter: letter, text: text, score: score)
+    }
+}
+
+private struct FlowerCharacterBloom: View {
+    let result: FlowerCharacterResult
+
+    var body: some View {
+        ZStack {
+            FlowerWatercolorField(result: result)
+
+            stem
+
+            LeafShape()
+                .fill(result.accent.opacity(0.72))
+                .frame(width: 78, height: 40)
+                .rotationEffect(.degrees(-28))
+                .offset(x: -46, y: 56)
+
+            LeafShape()
+                .fill(result.accent.opacity(0.62))
+                .frame(width: 72, height: 36)
+                .rotationEffect(.degrees(28))
+                .scaleEffect(x: -1, y: 1)
+                .offset(x: 44, y: 86)
+
+            flowerHead
+                .offset(y: -58)
+        }
+        .frame(width: 280, height: 320)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var stem: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 132, y: 296))
+            path.addCurve(
+                to: CGPoint(x: 138, y: 132),
+                control1: CGPoint(x: 162, y: 228),
+                control2: CGPoint(x: 113, y: 180)
+            )
+        }
+        .stroke(
+            result.accent.opacity(0.76),
+            style: StrokeStyle(lineWidth: 5, lineCap: .round)
+        )
+    }
+
+    @ViewBuilder
+    private var flowerHead: some View {
+        switch result.bloomStyle {
+        case .snowdrop:
+            snowdropHead
+        case .lilyOfTheValley:
+            lilyOfTheValleyHead
+        case .daisy:
+            daisyHead
+        case .jasmine:
+            jasmineHead
+        case .sunflower:
+            sunflowerHead
+        case .rose:
+            roseHead
+        case .lily:
+            lilyHead
+        case .peony:
+            peonyHead
+        }
+    }
+
+    private var sunflowerHead: some View {
+        ZStack {
+            ForEach(0..<24, id: \.self) { index in
+                FlowerPetal(
+                    color: index.isMultiple(of: 2) ? result.secondary : Color(red: 1.0, green: 0.70, blue: 0.10),
+                    width: 22,
+                    height: 70,
+                    angle: Double(index) * 15,
+                    radius: 42
+                )
+            }
+
+            Circle()
+                .fill(result.center)
+                .frame(width: 76, height: 76)
+                .overlay(
+                    Circle()
+                        .stroke(Color(red: 0.48, green: 0.28, blue: 0.08), lineWidth: 8)
+                        .blur(radius: 0.3)
+                )
+
+            ForEach(0..<16, id: \.self) { index in
+                Circle()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(width: 5, height: 5)
+                    .offset(y: -22)
+                    .rotationEffect(.degrees(Double(index) * 22.5))
+            }
+        }
+        .frame(width: 180, height: 180)
+    }
+
+    private var daisyHead: some View {
+        ZStack {
+            ForEach(0..<18, id: \.self) { index in
+                FlowerPetal(
+                    color: Color.white.opacity(index.isMultiple(of: 2) ? 0.98 : 0.86),
+                    width: 20,
+                    height: 62,
+                    angle: Double(index) * 20,
+                    radius: 34
+                )
+            }
+
+            Circle()
+                .fill(result.center)
+                .frame(width: 48, height: 48)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.75), lineWidth: 2)
+                )
+        }
+        .frame(width: 150, height: 150)
+    }
+
+    private var jasmineHead: some View {
+        ZStack {
+            ForEach(0..<6, id: \.self) { index in
+                FlowerPetal(
+                    color: index.isMultiple(of: 2) ? Color.white : Color(red: 0.98, green: 0.96, blue: 0.88),
+                    width: 42,
+                    height: 82,
+                    angle: Double(index) * 60,
+                    radius: 26
+                )
+            }
+
+            Circle()
+                .fill(result.center)
+                .frame(width: 22, height: 22)
+
+            bud(offset: CGPoint(x: 72, y: -46), rotation: 34)
+            bud(offset: CGPoint(x: -68, y: 34), rotation: -30)
+        }
+        .frame(width: 178, height: 178)
+    }
+
+    private var roseHead: some View {
+        ZStack {
+            ForEach(0..<10, id: \.self) { index in
+                FlowerPetal(
+                    color: index.isMultiple(of: 2) ? result.secondary : result.accent.opacity(0.86),
+                    width: 36,
+                    height: 86,
+                    angle: Double(index) * 36,
+                    radius: 31
+                )
+            }
+
+            ForEach(0..<7, id: \.self) { index in
+                FlowerPetal(
+                    color: Color(red: 0.94, green: 0.38, blue: 0.48).opacity(0.88),
+                    width: 28,
+                    height: 62,
+                    angle: Double(index) * 51,
+                    radius: 17
+                )
+            }
+
+            Circle()
+                .fill(result.accent.opacity(0.9))
+                .frame(width: 26, height: 26)
+        }
+        .frame(width: 170, height: 170)
+    }
+
+    private var lilyHead: some View {
+        ZStack {
+            ForEach(0..<6, id: \.self) { index in
+                FlowerPetal(
+                    color: index.isMultiple(of: 2) ? Color.white : Color(red: 0.96, green: 0.94, blue: 1.0),
+                    width: 34,
+                    height: 96,
+                    angle: Double(index) * 60 + 12,
+                    radius: 26
+                )
+            }
+
+            ForEach(0..<5, id: \.self) { index in
+                Rectangle()
+                    .fill(result.center.opacity(0.75))
+                    .frame(width: 2, height: 48)
+                    .offset(y: -18)
+                    .rotationEffect(.degrees(Double(index - 2) * 14))
+            }
+
+            Circle()
+                .fill(result.center)
+                .frame(width: 16, height: 16)
+        }
+        .frame(width: 180, height: 180)
+    }
+
+    private var peonyHead: some View {
+        ZStack {
+            ForEach(0..<14, id: \.self) { index in
+                FlowerPetal(
+                    color: index.isMultiple(of: 2) ? Color(red: 1.0, green: 0.72, blue: 0.78) : result.secondary,
+                    width: 42,
+                    height: 96,
+                    angle: Double(index) * 25.7,
+                    radius: 42
+                )
+            }
+
+            ForEach(0..<10, id: \.self) { index in
+                FlowerPetal(
+                    color: Color(red: 0.98, green: 0.54, blue: 0.66).opacity(0.9),
+                    width: 34,
+                    height: 74,
+                    angle: Double(index) * 36 + 10,
+                    radius: 22
+                )
+            }
+
+            Circle()
+                .fill(result.center)
+                .frame(width: 32, height: 32)
+        }
+        .frame(width: 210, height: 210)
+    }
+
+    private var snowdropHead: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: 128, y: 94))
+                path.addCurve(
+                    to: CGPoint(x: 104, y: 138),
+                    control1: CGPoint(x: 112, y: 102),
+                    control2: CGPoint(x: 102, y: 118)
+                )
+            }
+            .stroke(result.accent.opacity(0.62), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+
+            bellFlower(offset: CGPoint(x: 100, y: 146), scale: 0.82)
+            bellFlower(offset: CGPoint(x: 138, y: 116), scale: 0.68)
+            bellFlower(offset: CGPoint(x: 70, y: 162), scale: 0.54)
+        }
+        .frame(width: 170, height: 170)
+    }
+
+    private var lilyOfTheValleyHead: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: 132, y: 78))
+                path.addCurve(
+                    to: CGPoint(x: 82, y: 158),
+                    control1: CGPoint(x: 96, y: 96),
+                    control2: CGPoint(x: 74, y: 124)
+                )
+            }
+            .stroke(result.accent.opacity(0.65), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+
+            bellFlower(offset: CGPoint(x: 92, y: 124), scale: 0.58)
+            bellFlower(offset: CGPoint(x: 116, y: 104), scale: 0.54)
+            bellFlower(offset: CGPoint(x: 78, y: 150), scale: 0.50)
+            bellFlower(offset: CGPoint(x: 132, y: 90), scale: 0.46)
+        }
+        .frame(width: 170, height: 170)
+    }
+
+    private func bud(offset: CGPoint, rotation: Double) -> some View {
+        ZStack {
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.92))
+                .frame(width: 22, height: 38)
+                .rotationEffect(.degrees(rotation))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(result.accent.opacity(0.18), lineWidth: 1)
+                        .rotationEffect(.degrees(rotation))
+                )
+        }
+        .offset(x: offset.x, y: offset.y)
+    }
+
+    private func bellFlower(offset: CGPoint, scale: CGFloat) -> some View {
+        ZStack {
+            FlowerPetal(color: Color.white, width: 24, height: 44, angle: -18, radius: 8)
+            FlowerPetal(color: Color(red: 0.98, green: 0.98, blue: 0.92), width: 24, height: 44, angle: 18, radius: 8)
+            Circle()
+                .fill(result.center.opacity(0.48))
+                .frame(width: 8, height: 8)
+                .offset(y: 18)
+        }
+        .scaleEffect(scale)
+        .offset(x: offset.x - 85, y: offset.y - 85)
+    }
+}
+
+private struct FlowerWatercolorField: View {
+    let result: FlowerCharacterResult
+
+    private let sparklePositions: [CGPoint] = [
+        CGPoint(x: 42, y: 106),
+        CGPoint(x: 214, y: 118),
+        CGPoint(x: 66, y: 192),
+        CGPoint(x: 224, y: 212)
+    ]
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            result.secondary.opacity(0.42),
+                            result.background.opacity(0.14),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 10,
+                        endRadius: 132
+                    )
+                )
+                .frame(width: 260, height: 260)
+                .blur(radius: 4)
+
+            ForEach(Array(sparklePositions.enumerated()), id: \.offset) { _, point in
+                MiniFlowerSparkle(color: result.secondary)
+                    .position(point)
+            }
+        }
+    }
+}
+
+private struct MiniFlowerSparkle: View {
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<4, id: \.self) { index in
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.78))
+                    .frame(width: 7, height: 14)
+                    .offset(y: -6)
+                    .rotationEffect(.degrees(Double(index) * 90))
+            }
+            Circle()
+                .fill(color.opacity(0.58))
+                .frame(width: 5, height: 5)
+        }
+        .frame(width: 26, height: 26)
+    }
+}
+
+private struct FlowerPetal: View {
+    let color: Color
+    let width: CGFloat
+    let height: CGFloat
+    let angle: Double
+    let radius: CGFloat
+
+    var body: some View {
+        PetalShape()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        color.opacity(0.82),
+                        color,
+                        Color.white.opacity(0.54)
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+            )
+            .overlay(
+                PetalShape()
+                    .stroke(Color.white.opacity(0.36), lineWidth: 1)
+            )
+            .frame(width: width, height: height)
+            .offset(y: -radius)
+            .rotationEffect(.degrees(angle))
+    }
+}
+
+private struct PetalShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addCurve(
+            to: CGPoint(x: rect.midX, y: rect.maxY),
+            control1: CGPoint(x: rect.maxX + rect.width * 0.16, y: rect.height * 0.22),
+            control2: CGPoint(x: rect.maxX, y: rect.height * 0.72)
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.midX, y: rect.minY),
+            control1: CGPoint(x: rect.minX, y: rect.height * 0.72),
+            control2: CGPoint(x: rect.minX - rect.width * 0.16, y: rect.height * 0.22)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct LeafShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.midY),
+            control: CGPoint(x: rect.midX, y: rect.minY - rect.height * 0.18)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.midY),
+            control: CGPoint(x: rect.midX, y: rect.maxY + rect.height * 0.18)
+        )
+        path.closeSubpath()
+        return path
     }
 }
 

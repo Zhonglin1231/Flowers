@@ -30,4 +30,5 @@ struct AIGeneratedPreview {
     let referenceImages: [URL]
     let usedImageToImage: Bool
     let modelName: String
+    let imageSize: String
 }

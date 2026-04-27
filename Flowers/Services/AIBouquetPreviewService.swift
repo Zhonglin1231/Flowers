@@ -9,6 +9,8 @@ import Foundation
 import UIKit
 
 struct AIBouquetPreviewService {
+    nonisolated static let defaultImageSize = "2560x1440"
+    
     private let session: URLSession = .shared
     
     func search(requirement: String, flowers: [Flower]) -> AIBouquetSearchResult {
@@ -58,6 +60,7 @@ struct AIBouquetPreviewService {
         wrappingOption: BouquetWrappingOption?,
         apiKey: String,
         modelName: String,
+        imageSize: String = AIBouquetPreviewService.defaultImageSize,
         requireReferenceImages: Bool = false
     ) async throws -> AIGeneratedPreview {
         let cleanedKey = sanitizeAPIKey(apiKey)
@@ -88,11 +91,13 @@ struct AIBouquetPreviewService {
         if requireReferenceImages, referencePreparation.payloads.count < referencePreparation.expectedCount {
             throw AIPreviewError.referenceImageUnavailable(referencePreparation.failures)
         }
+        let resolvedImageSize = try validateImageSize(imageSize)
         let prompt = buildPrompt(requirement: requirement, selections: chosenSelections, wrappingOption: wrappingOption)
         let requestBody = ArkImageGenerationRequest(
             model: modelName,
             prompt: prompt,
-            image: referencePreparation.payloads.isEmpty ? nil : referencePreparation.payloads
+            image: referencePreparation.payloads.isEmpty ? nil : referencePreparation.payloads,
+            size: resolvedImageSize
         )
         
         var request = URLRequest(url: URL(string: "https://ark.cn-beijing.volces.com/api/v3/images/generations")!)
@@ -121,11 +126,27 @@ struct AIBouquetPreviewService {
                 prompt: prompt,
                 referenceImages: referencePreparation.sourceURLs,
                 usedImageToImage: !referencePreparation.payloads.isEmpty,
-                modelName: modelName
+                modelName: modelName,
+                imageSize: resolvedImageSize
             )
         }
         
         throw AIPreviewError.invalidResponse
+    }
+    
+    private func validateImageSize(_ imageSize: String) throws -> String {
+        let trimmed = imageSize.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = trimmed.isEmpty ? Self.defaultImageSize : trimmed
+        let parts = candidate.lowercased().split(separator: "x")
+        guard parts.count == 2,
+              let width = Int(parts[0]),
+              let height = Int(parts[1]),
+              width > 0,
+              height > 0 else {
+            throw AIPreviewError.invalidImageSize(candidate)
+        }
+        
+        return "\(width)x\(height)"
     }
     
     private func buildSelection(
@@ -484,7 +505,7 @@ private struct ArkImageGenerationRequest: Encodable {
     let image: [String]?
     let sequentialImageGeneration: String = "disabled"
     let responseFormat: String = "url"
-    let size: String = "1280x720"
+    let size: String
     let stream: Bool = false
     let watermark: Bool = true
     
@@ -520,6 +541,7 @@ enum AIPreviewError: LocalizedError {
     case missingWrappingReferenceImage(String?)
     case referenceImageUnavailable([String])
     case invalidAPIKeyFormat(String)
+    case invalidImageSize(String)
     case invalidResponse
     case serverError(String)
     
@@ -543,6 +565,8 @@ enum AIPreviewError: LocalizedError {
             return "这些参考图当前不可用：\(failures.joined(separator: "；"))"
         case .invalidAPIKeyFormat(let message):
             return message
+        case .invalidImageSize(let imageSize):
+            return "图片尺寸格式不正确：\(imageSize)。请在 ShopSystem 里填写类似 2560x1440 的格式。"
         case .invalidResponse:
             return "图片服务返回了无法识别的结果。"
         case .serverError(let message):
